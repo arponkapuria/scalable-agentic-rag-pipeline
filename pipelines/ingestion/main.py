@@ -6,6 +6,7 @@ Runs as a Ray Job (submitted via s3_event_handler.py's JobSubmissionClient
 call), one job per uploaded file — bucket/file_key come from sys.argv,
 set by the MinIO webhook -> submit_ingestion_job() call chain.
 """
+import asyncio
 import logging
 import os
 import sys
@@ -74,7 +75,12 @@ def process_batch(batch: Dict[str, Any], corpus_id: str) -> Dict[str, Any]:
 
         try:
             if ext == "pdf":
-                markdown_text, metadata = parse_pdf_bytes(content, filename)
+                # parse_pdf_bytes is now async (image captioning does a
+                # real Gemini call) — this Ray worker function is called
+                # synchronously with no loop already running, so
+                # asyncio.run() per file is safe here (unlike the
+                # in-process FastAPI pipeline, which already has one).
+                markdown_text, metadata = asyncio.run(parse_pdf_bytes(content, filename))
                 chunks = split_markdown_by_sections(markdown_text, chunk_size=512, overlap=50)
             else:
                 raw_text, metadata = parse_document(content, filename)
@@ -142,7 +148,7 @@ def main(bucket_name: str, file_key: str):
     graph_ds = chunked_ds.map_batches(
         GraphExtractor,
         compute=ray.data.ActorPoolStrategy(min_size=1, max_size=2),
-        batch_size=5,
+        batch_size=settings.GRAPH_EXTRACTION_BATCH_SIZE,
     )
     logger.info("Graph extraction pipeline configured")
 

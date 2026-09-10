@@ -37,6 +37,7 @@ dimension — see _embed_for_cache()'s try/except for how that's handled.
 import hashlib
 import json
 import logging
+import re
 import struct
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -54,6 +55,17 @@ logger = logging.getLogger(__name__)
 VECTOR_DIM = 1024  # matches FastEmbed's bge-large-en-v1.5 — see module docstring
 INDEX_NAME = "idx:semantic_cache"
 KEY_PREFIX = "cache:"
+
+# Characters RediSearch's query parser treats as special even inside a
+# TAG {} block (its own documented escape list) — a bare corpus_id UUID
+# (e.g. "a7f33ab5-8c0c-4ba1-...") breaks the parser on every hyphen
+# without this. Each match gets backslash-escaped before being spliced
+# into a query string.
+_TAG_ESCAPE_RE = re.compile(r'([,.<>{}\[\]"\':;!@#$%^&*()\-+=~ ])')
+
+
+def _escape_tag_value(value: str) -> str:
+    return _TAG_ESCAPE_RE.sub(r"\\\1", value)
 
 
 class RedisCache:
@@ -222,8 +234,9 @@ class RedisCache:
             vector_bytes = struct.pack(f"{VECTOR_DIM}f", *query_vector)
 
             client = self._get_client()
+            escaped_corpus_id = _escape_tag_value(corpus_id)
             search_query = (
-                Query(f"(@corpus_id:{{{corpus_id}}})=>[KNN 1 @vector $vec AS score]")
+                Query(f"(@corpus_id:{{{escaped_corpus_id}}})=>[KNN 1 @vector $vec AS score]")
                 .sort_by("score")
                 .return_fields("score")
                 .dialect(2)

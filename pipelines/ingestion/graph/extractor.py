@@ -21,6 +21,20 @@ makes a persistent httpx.AsyncClient safe to reuse here — Ray actors are
 long-lived processes, so one loop for the actor's life is the correct
 pattern, not a new one per batch.
 
+Rate-limiter-sharing bug (fixed): with Ray's ActorPoolStrategy running 2
+concurrent GraphExtractor actors, each built its OWN LLMClient via
+build_llm_client() — two separate BackendRateLimiter/CircuitBreaker
+instances undercounting one real, shared Groq/OpenRouter account budget.
+`__init__` now takes an optional `llm_client` — the in-process ingestion
+path (pipelines/ingestion/pipeline.py) passes in the FastAPI app's single
+global `llm_client` singleton, the same one chat uses, so there's only
+ever ONE rate limiter/circuit breaker for the whole process, chat and
+ingestion included (correct: the provider's limit is account-level
+regardless of which logical component is calling). When llm_client is
+omitted (the Ray-actor `__call__` path, still separate processes), this
+class builds and owns its own client exactly as before — the sharing fix
+only applies where actual process-sharing is possible.
+
 Output nodes/edges are JSON-STRING serialized, not native Python lists
 (Bug 4 fix) — Ray Data batches are Arrow-backed, and a column of
 ragged/mixed-shape object arrays (some rows [], others lists-of-dicts)
@@ -36,35 +50,44 @@ pointed at.
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pipelines.ingestion.graph.schema import GraphSchema
+from services.api.app.clients.llm.base import LLMClient
 from services.api.app.clients.llm.factory import build_llm_client
+from services.api.app.clients.llm.openai_compatible import ModelExhaustedError
 
 logger = logging.getLogger(__name__)
 
 
 class GraphExtractor:
-    """Ray Actor Class for Graph Extraction via the LLMClient factory."""
+    """Callable class used by both the Ray Data path (__call__) and the
+    in-process path (await extract_batch(...) directly, no Ray)."""
 
-    def __init__(self):
-        # One event loop + one client (+ its circuit breaker) for this
-        # actor's entire lifetime — see module docstring for why this
-        # matters (circuit breaker persistence, not just avoiding
-        # per-call httpx client setup overhead).
+    def __init__(self, llm_client: Optional[LLMClient] = None):
+        # A loop is always created for __call__'s sake (Ray Data invokes
+        # this synchronously) — but if llm_client is a shared instance
+        # from the app's own running loop, __call__ shouldn't be mixed
+        # with in-process/await usage on the same extractor instance;
+        # the two entry points are for the two different execution
+        # backends (INGESTION_BACKEND=ray vs in_process), not both at once.
         self._loop = asyncio.new_event_loop()
-        self._client = build_llm_client()
-        self._loop.run_until_complete(self._client.start())
+        self._owns_client = llm_client is None
+        if llm_client is not None:
+            self._client = llm_client  # already started by app lifespan
+        else:
+            self._client = build_llm_client()
+            self._loop.run_until_complete(self._client.start())
 
     def __call__(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         texts = list(batch["text"])  # Ray batches are numpy arrays by default — see compute.py's same fix
-        results = self._loop.run_until_complete(self._extract_batch(texts))
+        results = self._loop.run_until_complete(self.extract_batch(texts))
 
         batch["graph_nodes"] = [json.dumps(nodes) for nodes, _ in results]
         batch["graph_edges"] = [json.dumps(edges) for _, edges in results]
         return batch
 
-    async def _extract_batch(self, texts: List[str]) -> List[Tuple[list, list]]:
+    async def extract_batch(self, texts: List[str]) -> List[Tuple[list, list]]:
         numbered = "\n\n".join(f"[Segment {i}]\n{text}" for i, text in enumerate(texts))
         try:
             content = await self._client.chat_completion(
@@ -74,6 +97,17 @@ class GraphExtractor:
                 ],
                 temperature=0.0,
                 json_mode=True,
+                # The default 1024 was sized for a single chunk's output,
+                # not N segments' worth of nodes+edges JSON — too small
+                # here truncates mid-string, which is what produced the
+                # "Unterminated string"/segment-count-mismatch failures.
+                # Capped at 950, not scaled up freely: live testing showed
+                # qwen/qwen3.8-27b hard-rejects any single request asking
+                # for >=1000 max_tokens (its real OTPM ceiling), so this
+                # stays safely under that regardless of batch size —
+                # GRAPH_EXTRACTION_BATCH_SIZE is what should be tuned to
+                # fit within this cap, not the other way around.
+                max_tokens=min(950, 350 * len(texts)),
             )
             segments = json.loads(content).get("segments", [])
             if len(segments) != len(texts):
@@ -82,15 +116,39 @@ class GraphExtractor:
                 )
             return [(seg.get("nodes", []), seg.get("edges", [])) for seg in segments]
 
+        except ModelExhaustedError as e:
+            # The batch call already tried every model (with its own
+            # retries) and every one failed/rate-limited — that's the
+            # WHOLE backend exhausted, not a parsing fluke. Falling back
+            # to N individual calls here would just rediscover the same
+            # exhaustion N times, burning scarce quota at exactly the
+            # moment it's scarcest (this was the actual cause of runs
+            # stretching to 20+ minutes under load). Skip the batch
+            # instead — ingestion still completes, just with no graph
+            # data for these chunks, which is a better tradeoff than a
+            # retry storm.
+            logger.warning(f"Batch graph extraction skipped ({len(texts)} chunks) — backend exhausted: {e}")
+            return [([], []) for _ in texts]
+
         except Exception as e:
-            # Batch call failed to parse/align — fall back to one call per
-            # chunk for THIS batch only, rather than silently dropping the
-            # whole batch's graph data. If the backend is genuinely
-            # exhausted (circuit open), these fail fast too, not slow.
+            # Malformed/misaligned JSON, not exhaustion — worth retrying
+            # per chunk since a single chunk's smaller payload is less
+            # likely to hit the same truncation/parsing issue.
             logger.warning(f"Batch graph extraction failed ({e}); falling back to per-chunk calls")
             results = []
             for text in texts:
-                results.append(await self._extract_one(text))
+                try:
+                    results.append(await self._extract_one(text))
+                except ModelExhaustedError as exhausted:
+                    # Backend went from "some models slow" to "fully
+                    # exhausted" partway through the fallback loop — stop
+                    # spending remaining chunks' worth of calls on a
+                    # backend that's already down; skip the rest of this
+                    # batch too instead of retrying each one individually.
+                    logger.warning(f"Per-chunk fallback aborted, backend exhausted: {exhausted}")
+                    remaining = len(texts) - len(results)
+                    results.extend([([], [])] * remaining)
+                    break
             return results
 
     async def _extract_one(self, text: str) -> Tuple[list, list]:
@@ -105,16 +163,24 @@ class GraphExtractor:
             )
             graph_data = json.loads(content)
             return graph_data.get("nodes", []), graph_data.get("edges", [])
+        except ModelExhaustedError:
+            # Let this propagate — the caller (extract_batch's fallback
+            # loop) needs to see it to stop calling _extract_one for the
+            # rest of this batch, instead of each subsequent call
+            # independently rediscovering the same exhaustion.
+            raise
         except Exception as e:
             logger.warning(f"Graph extraction failed for chunk: {e}")
             return [], []
 
     def __del__(self):
-        # Best-effort cleanup when the actor is torn down — not critical
-        # (the process is exiting anyway), just avoids a dangling
-        # unclosed-client warning in logs.
+        # Best-effort cleanup when the actor/instance is torn down — not
+        # critical (the process is exiting anyway), just avoids a
+        # dangling unclosed-client warning in logs. Never closes a
+        # shared (not owned) client — that's the app lifespan's job.
         try:
-            self._loop.run_until_complete(self._client.close())
+            if self._owns_client:
+                self._loop.run_until_complete(self._client.close())
             self._loop.close()
         except Exception:
             pass

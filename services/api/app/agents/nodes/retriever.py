@@ -25,7 +25,7 @@ async def retrieve_node(state: AgentState) -> Dict:
     """
     query = state["current_query"]
     corpus_id = state["corpus_id"]
-    logger.info(f"Retrieving context for corpus={corpus_id}: {query}")
+    logger.info(f"[retrieve:{corpus_id}] stage=start query={query!r}")
 
     dense_vector, sparse_vector, doc_count = await asyncio.gather(
         embedding_client.embed_query(query),
@@ -33,6 +33,7 @@ async def retrieve_node(state: AgentState) -> Dict:
         qdrant_client.count_distinct_documents(corpus_id),
     )
     sparse_vector = sparse_vector[0]
+    logger.info(f"[retrieve:{corpus_id}] stage=embed_query status=done doc_count={doc_count}")
 
     async def run_vector_search():
         results = await qdrant_client.search_hybrid(
@@ -72,6 +73,10 @@ async def retrieve_node(state: AgentState) -> Dict:
             return []
 
     vector_docs, graph_docs = await asyncio.gather(run_vector_search(), run_graph_search())
+    logger.info(
+        f"[retrieve:{corpus_id}] stage=hybrid_search status=done "
+        f"vector_hits={len(vector_docs)} graph_hits={len(graph_docs)}"
+    )
 
     seen = set()
     combined_docs = []
@@ -81,12 +86,13 @@ async def retrieve_node(state: AgentState) -> Dict:
             combined_docs.append(doc)
 
     if not combined_docs:
-        logger.info("No documents retrieved.")
+        logger.info(f"[retrieve:{corpus_id}] stage=hybrid_search status=empty")
         return {"documents": [], "tool_used": "vector_search", "sources": []}
 
     scores = await reranker_client.rerank(query, combined_docs)
     ranked = [doc for doc, _ in sorted(zip(combined_docs, scores), key=lambda x: x[1], reverse=True)]
     final_docs = ranked[: settings.RERANK_TOP_N]
+    logger.info(f"[retrieve:{corpus_id}] stage=rerank status=done candidates={len(combined_docs)} kept={len(final_docs)}")
 
     # Sources parsed back out of the "[Source: filename]" suffix
     # run_vector_search() appends to each doc string — cheap enough not to

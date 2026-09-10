@@ -6,11 +6,16 @@ from libs.utils.rate_limiter import BackendRateLimiter
 # console.groq.com/settings/limits if behavior seems off; these are NOT
 # fetched dynamically, only used to seed the tracker before live headers
 # arrive). Groq enforces RPM+RPD+TPM+TPD simultaneously per model —
-# hitting ANY one trips a 429, and limits differ meaningfully by model
-# (compound has no published token limit; the others share the same
-# 8K TPM / 200K TPD envelope).
+# hitting ANY one trips a 429.
+#
+# groq/compound deliberately excluded: it's Groq's agentic auto-routing
+# model (can invoke its own web-search/code-exec internally), and in
+# testing it 413'd on plain short-context chat payloads that every other
+# Groq model handled fine — combined with round-robin dispatch giving it
+# regular turns as the first-tried model, that meant a guaranteed wasted
+# call + backoff delay on a fraction of every request. Not worth the
+# ~13s of retries it costs before falling through to a model that works.
 _GROQ_MODEL_LIMITS = {
-    "groq/compound": dict(rpm=30, rpd=250),
     "openai/gpt-oss-120b": dict(rpm=30, rpd=1000, tpm=8000, tpd=200_000),
     "qwen/qwen3.8-27b": dict(rpm=30, rpd=1000, tpm=8000, tpd=200_000),
     "openai/gpt-oss-20b": dict(rpm=30, rpd=1000, tpm=8000, tpd=200_000),
@@ -44,4 +49,8 @@ class GroqClient(OpenAICompatibleClient):
             api_key=settings.GROQ_API_KEY,
             rate_limiter=_build_groq_rate_limiter(settings.GROQ_MODELS),
             header_style="groq",
+            # Groq's limits are PER MODEL (unlike OpenRouter's account-
+            # level pool) — round-robin spreads calls across all
+            # configured models instead of exhausting models[0] first.
+            dispatch_strategy="round_robin",
         )

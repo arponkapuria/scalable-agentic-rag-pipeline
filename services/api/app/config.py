@@ -110,9 +110,60 @@ class Settings(BaseSettings):
     CACHE_VERSIONS_KEPT: int = 2  # historical corpus_version entries kept per cache key (before/after comparison)
 
     # PDF image description (Phase 3) — one vision call per extracted
-    # figure via OpenRouter, gated so a broken key doesn't fail ingestion.
+    # figure via Gemini (free-tier, multimodal), gated so a broken key
+    # doesn't fail ingestion. Not part of the Groq/OpenRouter chat pool —
+    # separate budget, no backup configured (see gemini_client.py).
     PDF_DESCRIBE_IMAGES: bool = True
-    OPENROUTER_VISION_MODEL: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_VISION_MODEL: str = "gemini-3.5-flash-lite"
+
+    # --- Ingestion execution backend ---
+    # in_process (default): runs inline in the FastAPI process as a
+    # background task, no separate Ray cluster needed for local/demo dev.
+    # ray: the original pipelines/ingestion/main.py Ray Data path (frozen,
+    # kept for later re-activation — see PROGRESS.md carry-over notes).
+    INGESTION_BACKEND: str = "in_process"
+    # Chunks per GraphExtractor LLM call — batching multiple chunks into
+    # one call is what keeps this from being 1 Groq call per chunk.
+    # 2, not the originally-planned 8-10: live testing showed
+    # qwen/qwen3.8-27b has a hard 1000-output-token-per-request ceiling
+    # (not a volume/throttling limit — ANY single request asking for
+    # >=1000 max_tokens is rejected outright, every time). At ~350 tokens/
+    # chunk for graph JSON output, batch_size=8 (2800 tokens) made qwen
+    # permanently unable to serve batch calls at all. 2 keeps requests
+    # comfortably under every configured model's real ceiling.
+    GRAPH_EXTRACTION_BATCH_SIZE: int = 2
+
+    # --- OpenRouter fallback toggle (LLM + reranker) ---
+    # False (default): Groq/FastEmbed run with no backup. Config-gated,
+    # not deleted — a functioning OpenRouter path is still worth keeping
+    # for whenever budget/reliability calls for it again.
+    ENABLE_OPENROUTER_FALLBACK: bool = False
+
+    # --- Heuristic model-tier routing (responder.py's final-answer call
+    # only — planner/query-rewriter/graph-extraction are fixed-shape
+    # tasks that don't need tiering). Routing logic itself is fixed in
+    # model_router.py; only the models each tier maps to are env-driven.
+    ENABLE_MODEL_ROUTING: bool = True
+    MODEL_TIER_SIMPLE: str = "openai/gpt-oss-20b"
+    MODEL_TIER_COMPLEX: str = "openai/gpt-oss-120b"
+    # Combined query+context char count above which a query is routed to
+    # the COMPLEX tier (plus a fixed keyword check — see model_router.py).
+    MODEL_ROUTING_CHAR_THRESHOLD: int = 1500
+
+    # --- Logging ---
+    LOG_DIR: str = "logs"
+    LOG_FILE_NAME: str = "api.log"
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB per file before rotating
+    LOG_BACKUP_COUNT: int = 5              # keep 5 rotated files (50MB total ceiling)
+
+    # --- Ingestion debug artifacts ---
+    # Writes intermediate pipeline output (parsed chunks, extracted graph
+    # data) to disk so quality can actually be inspected, not just
+    # inferred from log line counts. On by default for local dev; turn
+    # off before the public demo (writes raw document content to disk).
+    INGEST_DEBUG_DUMP: bool = True
+    INGEST_DEBUG_DIR: str = "logs/ingest_debug"
 
     @field_validator(
         "GROQ_MODELS", "OPENROUTER_MODELS", "OLLAMA_MODELS",

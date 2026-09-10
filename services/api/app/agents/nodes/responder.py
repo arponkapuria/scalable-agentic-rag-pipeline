@@ -1,5 +1,12 @@
+import logging
+
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.llm.factory import llm_client
+from services.api.app.config import settings
+from libs.utils.model_router import route_model
+
+logger = logging.getLogger(__name__)
+
 
 async def generate_node(state: AgentState) -> dict:
     """
@@ -10,7 +17,16 @@ async def generate_node(state: AgentState) -> dict:
     
     # Construct Context String
     context_str = "\n\n".join(documents)
-    
+
+    # Heuristic model-tier routing (see model_router.py) — only applies
+    # here, not to planner/query-rewriter/graph-extraction. `routed_model`
+    # is None when routing is disabled, which chat_completion treats
+    # identically to "no pin" (falls back to the backend's own priority
+    # list/round-robin).
+    routed_model = route_model(query, len(context_str)) if settings.ENABLE_MODEL_ROUTING else None
+    if routed_model:
+        logger.info(f"Responder routed to model: {routed_model}")
+
     answer = await llm_client.chat_completion(
         messages=[
             {
@@ -28,7 +44,8 @@ async def generate_node(state: AgentState) -> dict:
                 "content": f"Context:\n{context_str}\n\nQuestion:\n{query}"
             }
         ],
-        temperature=0.3
+        temperature=0.3,
+        model=routed_model,
     )
 
     # backend_used: FailoverLLMClient (LLM_BACKEND=api) tracks which of

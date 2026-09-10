@@ -40,6 +40,15 @@ class OpenAICompatibleClient(LLMClient):
     causes a move to the next model in the list. If every model is either
     rate-limited or fails, raises ModelExhaustedError.
 
+    Two ways the model list gets reordered/narrowed before that walk:
+    - `dispatch_strategy="round_robin"` (Groq only — see groq_client.py):
+      rotates which model starts the list each call, so load spreads
+      across all configured models with SEPARATE budgets instead of
+      always exhausting models[0] first.
+    - `chat_completion(..., model=X)`: caller pins one specific model,
+      skipping the list walk entirely (used by heuristic model-tier
+      routing and any single-model client like Gemini captioning).
+
     A circuit breaker sits in front of the whole backend: once
     CIRCUIT_FAILURE_THRESHOLD consecutive ModelExhaustedErrors happen
     (every model failed, repeatedly), further calls fail fast for a
@@ -55,6 +64,7 @@ class OpenAICompatibleClient(LLMClient):
         timeout: float = 120.0,
         rate_limiter: Optional[BackendRateLimiter] = None,
         header_style: str = "none",  # "groq" | "openrouter" | "none"
+        dispatch_strategy: str = "priority",  # "priority" | "round_robin"
     ):
         self.base_url = base_url.rstrip("/")
         self.models = models
@@ -64,6 +74,14 @@ class OpenAICompatibleClient(LLMClient):
         self._circuit = CircuitBreaker(failure_threshold=3, cooldown_seconds=30.0)
         self._rate_limiter = rate_limiter
         self._header_style = header_style
+        self._dispatch_strategy = dispatch_strategy
+        # Round-robin only matters when a backend has several models with
+        # SEPARATE budgets (Groq: per-model RPM/RPD/TPM/TPD) — rotating
+        # which model is tried first spreads load instead of always
+        # hammering models[0] until it's exhausted before touching the
+        # rest. Not used for "priority" backends (OpenRouter's budget is
+        # account-level anyway, so rotation buys nothing there).
+        self._rr_index = 0
 
     async def start(self):
         if not self.models:
@@ -84,7 +102,12 @@ class OpenAICompatibleClient(LLMClient):
             logger.info(f"{self.__class__.__name__} closed.")
 
     async def chat_completion(
-        self, messages: List[Dict], temperature: float = 0.3, json_mode: bool = False
+        self,
+        messages: List[Dict],
+        temperature: float = 0.3,
+        json_mode: bool = False,
+        model: Optional[str] = None,
+        max_tokens: int = 1024,
     ) -> str:
         if not self.client:
             raise RuntimeError(f"{self.__class__.__name__} not started. Call start() first.")
@@ -97,11 +120,23 @@ class OpenAICompatibleClient(LLMClient):
         except CircuitOpenError as e:
             raise ModelExhaustedError(str(e)) from e
 
+        # Caller pinned a specific model (e.g. heuristic routing) —
+        # bypass the priority/round-robin walk entirely and try only
+        # that one. Still budget/circuit-checked like any other call.
+        if model is not None:
+            models_to_try = [model]
+        elif self._dispatch_strategy == "round_robin" and self.models:
+            i = self._rr_index % len(self.models)
+            models_to_try = self.models[i:] + self.models[:i]
+            self._rr_index += 1
+        else:
+            models_to_try = self.models
+
         estimated_tokens = estimate_tokens(messages)
         last_error: Optional[Exception] = None
         any_attempted = False
 
-        for model in self.models:
+        for model in models_to_try:
             tracker = self._rate_limiter.get(model) if self._rate_limiter else None
 
             # Proactive skip — no HTTP call at all if we already know this
@@ -121,7 +156,7 @@ class OpenAICompatibleClient(LLMClient):
                 "model": model,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": 1024,
+                "max_tokens": max_tokens,
             }
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
@@ -156,9 +191,9 @@ class OpenAICompatibleClient(LLMClient):
 
         self._circuit.record_failure()
         if not any_attempted:
-            logger.warning(f"{self.__class__.__name__}: all {len(self.models)} model(s) skipped — rate-limited, no calls made.")
+            logger.warning(f"{self.__class__.__name__}: all {len(models_to_try)} model(s) skipped — rate-limited, no calls made.")
         raise ModelExhaustedError(
-            f"{self.__class__.__name__}: all {len(self.models)} model(s) exhausted"
+            f"{self.__class__.__name__}: all {len(models_to_try)} model(s) exhausted"
         ) from last_error
 
     def _record_headers(self, tracker, headers) -> None:
@@ -172,5 +207,20 @@ class OpenAICompatibleClient(LLMClient):
     @exponential_backoff(max_retries=2)
     async def _post_with_retry(self, payload: dict) -> httpx.Response:
         response = await self.client.post("/chat/completions", json=payload)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            # raise_for_status()'s default message is just the status
+            # line ("400 Bad Request for url ...") — it drops the actual
+            # error body, which is where Groq/OpenRouter/Gemini explain
+            # WHY (e.g. "max_tokens exceeds model limit", "response_format
+            # not supported for this model"). Without this, every 400 was
+            # a guessing game instead of an actual diagnosis.
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text[:500]
+            raise httpx.HTTPStatusError(
+                f"{response.status_code} {response.reason_phrase} for url '{response.url}' — body: {detail}",
+                request=response.request,
+                response=response,
+            )
         return response

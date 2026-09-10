@@ -56,9 +56,10 @@ def get_llm_client() -> LLMClient:
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="The user's query")
 
-    # Optional enhancement flags — both default to False
-    # Set to True to enable query rewriting and HyDE
-    use_query_rewriter: bool = Field(default=False, description="Resolve coreferences using conversation history")
+    # Query rewriter defaults ON — coreference resolution is cheap
+    # (one small LLM call) and strictly helps multi-turn retrieval.
+    # HyDE stays default-off per the locked design (not evaluated yet).
+    use_query_rewriter: bool = Field(default=True, description="Resolve coreferences using conversation history")
     use_hyde: bool = Field(default=False, description="Generate hypothetical document for better retrieval")
 
 # --- Routes ---

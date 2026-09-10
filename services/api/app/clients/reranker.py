@@ -112,8 +112,11 @@ class FailoverRerankerClient(RerankerClient):
             return await self.backup.rerank(query, documents)
 
 
-# FastEmbed primary (real cross-encoder), OpenRouter fallback (see module docstring for why).
-reranker_client: RerankerClient = FailoverRerankerClient(
-    primary=FastEmbedRerankClient(),
-    backup=OpenRouterRerankClient(),
+# FastEmbed primary (real cross-encoder). OpenRouter fallback is
+# config-gated off by default (ENABLE_OPENROUTER_FALLBACK) — see
+# PROGRESS.md carry-over notes; kept, not deleted, for when it's needed again.
+reranker_client: RerankerClient = (
+    FailoverRerankerClient(primary=FastEmbedRerankClient(), backup=OpenRouterRerankClient())
+    if settings.ENABLE_OPENROUTER_FALLBACK
+    else FastEmbedRerankClient()
 )

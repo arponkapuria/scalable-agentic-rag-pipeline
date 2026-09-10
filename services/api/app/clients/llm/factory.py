@@ -44,14 +44,18 @@ class FailoverLLMClient(LLMClient):
         await self.primary.close()
         await self.backup.close()
 
-    async def chat_completion(self, messages, temperature=0.3, json_mode=False) -> str:
+    async def chat_completion(self, messages, temperature=0.3, json_mode=False, model=None, max_tokens=1024) -> str:
         try:
-            result = await self.primary.chat_completion(messages, temperature, json_mode)
+            result = await self.primary.chat_completion(messages, temperature, json_mode, model, max_tokens)
             self.last_backend_used = self.primary.__class__.__name__
             return result
         except ModelExhaustedError as e:
             logger.warning(f"Primary backend exhausted, failing over to backup: {e}")
-            result = await self.backup.chat_completion(messages, temperature, json_mode)
+            # A `model` pin names a model in the PRIMARY's namespace (e.g.
+            # a Groq model id from heuristic routing) — meaningless to a
+            # different backend, so the backup falls back to its own
+            # priority list rather than being handed an id it doesn't have.
+            result = await self.backup.chat_completion(messages, temperature, json_mode, max_tokens=max_tokens)
             self.last_backend_used = self.backup.__class__.__name__
             return result
 
@@ -60,6 +64,10 @@ def build_llm_client() -> LLMClient:
     backend = settings.LLM_BACKEND
 
     if backend == "api":
+        if not settings.ENABLE_OPENROUTER_FALLBACK:
+            # Config-gated off, not deleted (see PROGRESS.md carry-over
+            # notes) — Groq runs alone, no failover wrapper at all.
+            return GroqClient() if settings.API_PRIMARY == "groq" else OpenRouterClient()
         groq, openrouter = GroqClient(), OpenRouterClient()
         primary, backup = (groq, openrouter) if settings.API_PRIMARY == "groq" else (openrouter, groq)
         return FailoverLLMClient(primary, backup)

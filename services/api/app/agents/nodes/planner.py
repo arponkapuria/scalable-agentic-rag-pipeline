@@ -65,7 +65,11 @@ async def planner_node(state: AgentState) -> dict:
         }
         
     except Exception as e:
-        logger.error(f"Planning failed: {e}")
+        # Pre-existing, non-fatal: json_mode occasionally returns content
+        # that fails to parse (root cause not fully pinned down — see
+        # PROGRESS.md). Fallback below always keeps the request working,
+        # so this stays a warning, not an error.
+        logger.warning(f"Planning failed, defaulting to retrieve: {e}")
         # Fallback: Assume we need to search
         return {
             "current_query": user_query,

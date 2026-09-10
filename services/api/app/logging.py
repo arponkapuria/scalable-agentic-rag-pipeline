@@ -1,7 +1,11 @@
 import logging
+import logging.handlers
 import json
+import os
 import sys
 from datetime import datetime
+
+from services.api.app.config import settings
 
 class JSONFormatter(logging.Formatter):
     """
@@ -28,13 +32,41 @@ class JSONFormatter(logging.Formatter):
             
         return json.dumps(log_record)
 
+class ConsoleFormatter(logging.Formatter):
+    """level + message only — readable in a dev terminal. Console stays
+    human-readable; the file handler below is where the structured,
+    parseable copy lives."""
+    def format(self, record):
+        line = f"{record.levelname}: {record.getMessage()}"
+        if record.exc_info:
+            line += "\n" + self.formatException(record.exc_info)
+        return line
+
 def setup_logging():
     """
-    Configures the root logger to output JSON to stdout.
+    Console: plain level+message, human-readable, real TTY (so uvicorn's
+    own colored access-log output — method/path/status — keeps working
+    natively; don't pipe `make dev` through `tee`/`grep` to get logs, use
+    the file below instead).
+
+    File: rotating, JSON-structured, one line per record — the standard
+    split (humans read the console, tools/log-aggregation read the file).
+    Rotates by size so a long-running dev/demo process doesn't grow an
+    unbounded log file; old files are numbered suffixes
+    (api.log.1, api.log.2, ...), oldest deleted past LOG_BACKUP_COUNT.
     """
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JSONFormatter())
-    
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(ConsoleFormatter())
+
+    os.makedirs(settings.LOG_DIR, exist_ok=True)
+    log_file_path = os.path.join(settings.LOG_DIR, settings.LOG_FILE_NAME)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file_path,
+        maxBytes=settings.LOG_MAX_BYTES,
+        backupCount=settings.LOG_BACKUP_COUNT,
+    )
+    file_handler.setFormatter(JSONFormatter())
+
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     
@@ -42,10 +74,14 @@ def setup_logging():
     if root_logger.handlers:
         root_logger.handlers = []
         
-    root_logger.addHandler(handler)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
     
-    # Silence noisy libraries
-    logging.getLogger("uvicorn.access").disabled = True 
+    # Silence noisy libraries. uvicorn.access is left ENABLED — it's the
+    # only thing that prints the HTTP method/path/status line per
+    # request, and it attaches its own handler/formatter directly to this
+    # logger (independent of root), which is what gives it native color
+    # in a real terminal.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Initialize on import

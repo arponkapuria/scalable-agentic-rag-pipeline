@@ -1,8 +1,25 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+
+import services.api.app.logging  # noqa: F401 — import alone runs setup_logging()
+                                  # via the module's own "initialize on
+                                  # import" call; must be the first
+                                  # first-party import in this file so the
+                                  # root logger is configured (rotating
+                                  # file + console) before anything else
+                                  # calls logging.getLogger(). Previously
+                                  # nothing imported this module at all,
+                                  # so the root logger stayed at Python's
+                                  # default WARNING and every logger.info()
+                                  # call across the app was silently
+                                  # dropped — uvicorn's own access/error
+                                  # loggers are unaffected by this, which
+                                  # is why request lines always showed up
+                                  # while nothing else did.
 from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.llm.factory import llm_client
+from services.api.app.clients.llm.gemini_client import gemini_client
 from services.api.app.cache.redis import redis_client
 from services.api.app.cache.redis_cache import redis_cache
 from services.api.app.memory.models import Base, ChatHistory, Feedback
@@ -26,6 +43,9 @@ async def lifespan(app: FastAPI):
     await neo4j_client.connect()
     await redis_client.connect()
     await llm_client.start()
+    # Vision-only client, used by in-process ingestion's PDF captioning —
+    # started here so it's ready before any upload triggers the webhook.
+    await gemini_client.start()
 
     # NOTE: qdrant_client.init_collections() is intentionally NOT called
     # here — it's lazy now (see clients/qdrant.py), connecting on first
@@ -42,6 +62,7 @@ async def lifespan(app: FastAPI):
     await neo4j_client.close()
     await redis_client.close()
     await llm_client.close()
+    await gemini_client.close()
     await qdrant_client.close()
     await redis_cache.close()
 
