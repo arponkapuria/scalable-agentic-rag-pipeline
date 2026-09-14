@@ -14,7 +14,23 @@ async def generate_node(state: AgentState) -> dict:
     """
     query = state["current_query"]
     documents = state["documents"] or []
-    
+
+    # Deterministic short-circuit for "retrieval genuinely found nothing" —
+    # NOT for direct_answer/tool_use paths, which legitimately have empty
+    # `documents` (see agents/graph.py's routing). Added after a real,
+    # observed failure: the LLM was called with zero context anyway and
+    # fabricated both an answer and a citation to a filename that doesn't
+    # exist in the corpus, ignoring its own "say you don't have it"
+    # system-prompt instruction outright. Don't rely on prompt-following
+    # for something this consequential when a deterministic check costs
+    # nothing and also saves an LLM call.
+    if state.get("action") == "retrieve" and not documents:
+        logger.info("No documents retrieved — skipping LLM call, returning fixed no-context answer.")
+        return {
+            "messages": [{"role": "assistant", "content": "I don't have that information in my documents."}],
+            "backend_used": "none",
+        }
+
     # Construct Context String
     context_str = "\n\n".join(documents)
 

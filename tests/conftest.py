@@ -10,7 +10,6 @@ import os
 # in .env or the shell.
 os.environ["DATABASE_URL"] = "postgresql+asyncpg://test:test@localhost:5432/test"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
-os.environ["NEO4J_PASSWORD"] = "test"
 os.environ["S3_BUCKET_NAME"] = "test-bucket"
 os.environ["GROQ_API_KEY"] = "test-groq-key"
 os.environ["GROQ_MODELS"] = "model-a,model-b"

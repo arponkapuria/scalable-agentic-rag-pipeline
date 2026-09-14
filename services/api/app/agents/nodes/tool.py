@@ -1,7 +1,6 @@
 import logging
 from services.api.app.agents import state
 from services.api.app.agents.state import AgentState
-from services.api.app.tools.graph_search import search_graph_tool
 from services.api.app.tools.web_search import web_search_tool
 from services.api.app.tools.sandbox import run_python_code
 from services.api.app.tools.vector_search import search_vector_tool
@@ -26,12 +25,8 @@ async def tool_node(state: AgentState) -> dict:
     tool_input = state.get("tool_input") or ""
     
     result = ""
-    
-    if tool_name == "graph_search":
-        logger.info(f"Executing Graph Search: {tool_input}")
-        result = await search_graph_tool(tool_input, state["corpus_id"])
 
-    elif tool_name == "vector_search":
+    if tool_name == "vector_search":
         logger.info(f"Executing Vector Search: {tool_input}")
         result = await search_vector_tool(tool_input, state["corpus_id"])
     
@@ -47,10 +42,9 @@ async def tool_node(state: AgentState) -> dict:
         result = "Unknown tool requested."
 
     # Return the observation. tool_used marks which tool actually ran —
-    # Phase 5's L2 semantic cache is gated on this: only
-    # vector_search/graph_search are cache-eligible there, web_search
-    # (staleness) and sandbox (numeric precision) are never L2-cached,
-    # matching the locked design.
+    # Phase 5's L2 semantic cache is gated on this: only vector_search is
+    # cache-eligible there, web_search (staleness) and sandbox (numeric
+    # precision) are never L2-cached, matching the locked design.
     return {
         "messages": [
             {"role": "user", "content": f"Tool Output: {result}"}

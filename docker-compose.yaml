@@ -36,22 +36,7 @@ services:
     volumes:
       - omnirag_qdrant_data:/qdrant/storage
 
-  # 4. Neo4j (Graph DB) — profile: graph
-  neo4j:
-    image: neo4j:5.26
-    container_name: omnirag-neo4j
-    profiles: ["graph"]
-    environment:
-      # Username stays "neo4j" (built-in initial-admin convention); password is ours.
-      NEO4J_AUTH: neo4j/omnirag_dev_password
-      NEO4J_dbms_memory_pagecache_size: 512M 
-    ports:
-      - "7474:7474" # HTTP
-      - "7687:7687" # Bolt
-    volumes:
-      - omnirag_neo4j_data:/data
-
-  # 5. MinIO (S3-compatible object storage) — profile: storage
+  # 4. MinIO (S3-compatible object storage) — profile: storage
   minio:
     image: minio/minio
     container_name: omnirag-minio
@@ -99,62 +84,7 @@ services:
       echo "Webhook configuration successful."
       '
 
-  # 6. Ray head + worker (ingestion cluster) — profile: ingestion
-  # Job Submission API (port 8265) is what s3_event_handler.py's
-  # JobSubmissionClient talks to; dashboard on 8265 too, GCS on 6379
-  # (separate from the Redis container's 6379 — different bridge network,
-  # no actual port collision, but mapped to a different host port to avoid
-  # any confusion when both profiles are up).
-  ray-head:
-    build:
-      context: .
-      dockerfile: deploy/ray/Dockerfile.local
-    container_name: omnirag-ray-head
-    profiles: ["ingestion"]
-    command: ray start --head --dashboard-host 0.0.0.0 --port 6380 --dashboard-port 8265 --block
-    ports:
-      - "8265:8265"
-      - "6380:6380"
-    mem_limit: 2g
-    cpus: 2.0
-    volumes:
-      - omnirag_ray_model_cache:/home/ray/.cache/huggingface
-    env_file:
-      - .env
-    environment:
-      QDRANT_HOST: qdrant
-      NEO4J_URI: bolt://neo4j:7687
-      REDIS_URL: redis://redis:6379/0
-      S3_ENDPOINT_URL: http://minio:9000
-
-  ray-worker:
-    build:
-      context: .
-      dockerfile: deploy/ray/Dockerfile.local
-    container_name: omnirag-ray-worker
-    profiles: ["ingestion"]
-    command: ray start --address=ray-head:6380 --block
-    depends_on:
-      - ray-head
-    # Capped low — this IS the "min/max workers, capped" from the locked
-    # design (see main.py's map_batches concurrency=(1,2) comment for how
-    # autoscaling actually happens on a single-host cluster: actor-pool
-    # concurrency within this fixed CPU budget, not container provisioning).
-    mem_limit: 4g
-    cpus: 2.0
-    volumes:
-      - omnirag_ray_model_cache:/home/ray/.cache/huggingface
-    env_file:
-      - .env
-    environment:
-      QDRANT_HOST: qdrant
-      NEO4J_URI: bolt://neo4j:7687
-      REDIS_URL: redis://redis:6379/0
-      S3_ENDPOINT_URL: http://minio:9000
-
 volumes:
   omnirag_pg_data:
   omnirag_qdrant_data:
-  omnirag_neo4j_data:
   omnirag_minio_data:
-  omnirag_ray_model_cache:

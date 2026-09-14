@@ -17,7 +17,7 @@ class VectorDBClient:
     # Lazy, not called from app startup — connects to Qdrant on first
     # actual use instead of unconditionally at boot. Keeps the app
     # bootable on whatever Docker profile is currently up (e.g. Phase 2's
-    # core+cache, no vector profile), matching neo4j_client/embed_client's
+    # core+cache, no vector profile), matching embed_client's
     # existing lazy-connect pattern. Guarded by _collections_ready so
     # concurrent first-callers don't all race to create collections.
     async def init_collections(self):
@@ -100,24 +100,21 @@ class VectorDBClient:
         )
         return response.points
 
-    async def count_distinct_documents(self, corpus_id: str) -> int:
-        """
-        Powers the single-paper vs multi-paper retrieval routing decision
-        (locked design: "single paper -> Qdrant only, multi-paper ->
-        Qdrant + Neo4j"). Scroll is fine at demo scale — a dedicated
-        documents table (Phase 6's corpus/documents endpoint) would be the
-        right answer at real scale, but doesn't exist yet.
-        """
+    async def delete_by_corpus_id(self, corpus_id: str) -> None:
+        """Cascade-delete hook for session expiry (session/cleanup.py) —
+        the consumer for the cross-store cleanup System-design.md and
+        session/store.py's ZSET-not-native-TTL choice were both explicitly
+        designed around ("purge_expired() returns purged ids... giving a
+        place to hook cross-store cascade deletes")."""
         await self.init_collections()
-        points, _ = await self.client.scroll(
+        await self.client.delete(
             collection_name=settings.QDRANT_COLLECTION,
-            scroll_filter=models.Filter(
-                must=[models.FieldCondition(key="corpus_id", match=models.MatchValue(value=corpus_id))]
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[models.FieldCondition(key="corpus_id", match=models.MatchValue(value=corpus_id))]
+                )
             ),
-            with_payload=["filename"],
-            limit=1000,
         )
-        return len({p.payload.get("filename") for p in points if p.payload})
 
     async def close(self):
         await self.client.close()

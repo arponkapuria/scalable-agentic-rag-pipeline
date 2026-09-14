@@ -1,4 +1,4 @@
-from services.api.app.clients.ray_llm import llm_client
+from services.api.app.clients.llm.factory import llm_client
 
 SYSTEM_PROMPT = """
 You are a helpful assistant. 

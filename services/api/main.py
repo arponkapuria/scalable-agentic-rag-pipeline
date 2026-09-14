@@ -16,7 +16,6 @@ import services.api.app.logging  # noqa: F401 — import alone runs setup_loggin
                                   # loggers are unaffected by this, which
                                   # is why request lines always showed up
                                   # while nothing else did.
-from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.llm.factory import llm_client
 from services.api.app.clients.llm.gemini_client import gemini_client
@@ -40,7 +39,6 @@ async def lifespan(app: FastAPI):
 
     # 1. Startup
     print("Initializing clients...")
-    await neo4j_client.connect()
     await redis_client.connect()
     await llm_client.start()
     # Vision-only client, used by in-process ingestion's PDF captioning —
@@ -59,7 +57,6 @@ async def lifespan(app: FastAPI):
     # 2. Shutdown
     print("Closing clients...")
     await stop_cleanup_task(cleanup_task)
-    await neo4j_client.close()
     await redis_client.close()
     await llm_client.close()
     await gemini_client.close()

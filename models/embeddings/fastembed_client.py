@@ -22,7 +22,7 @@ class FastEmbedClient:
 
     def _dense_model(self) -> TextEmbedding:
         if self._dense is None:
-            self._dense = TextEmbedding(model_name=settings.FASTEMBED_MODEL)
+            self._dense = TextEmbedding(model_name=settings.FASTEMBED_MODEL, cache_dir=settings.FASTEMBED_CACHE_DIR)
         return self._dense
 
     def _sparse_model(self) -> SparseTextEmbedding:
@@ -30,7 +30,7 @@ class FastEmbedClient:
             # Qdrant/bm25 — FastEmbed's BM25 sparse export, feeds Qdrant's
             # native sparse-vector index directly (locked design: BM25
             # sparse + dense, fused via RRF).
-            self._sparse = SparseTextEmbedding(model_name="Qdrant/bm25")
+            self._sparse = SparseTextEmbedding(model_name="Qdrant/bm25", cache_dir=settings.FASTEMBED_CACHE_DIR)
         return self._sparse
 
     def embed_dense(self, texts: list[str]) -> list[list[float]]:

@@ -7,12 +7,11 @@ from qdrant_client.http import models
 
 class QdrantIndexer:
     """
-    Ray Data terminal sink — same callable-class shape as BatchEmbedder/
-    GraphExtractor (map_batches, not write_datasource: QdrantIndexer isn't
-    a ray.data.Datasource, and the old write_datasource() call was dead —
-    never actually executes any Ray write path). Batches are column-
-    oriented dicts (dict of lists), matching what BatchEmbedder produces,
-    not row-lists.
+    Terminal write step of the in-process ingestion pipeline
+    (pipelines/ingestion/pipeline.py's _index_qdrant calls this directly —
+    no Ray Data, no separate ingestion cluster). Batches are column-
+    oriented dicts (dict of lists) purely by convention with the rest of
+    the pipeline's batch shape, not because anything Ray-specific requires it.
     """
     def __init__(self):
         host = os.getenv("QDRANT_HOST", "qdrant-service")   # qdrant-service = internal K8s DNS
@@ -25,8 +24,8 @@ class QdrantIndexer:
         """Ingestion has to be able to create the collection itself, not
         just assume it exists — previously this indexer just upserted
         straight in, which worked as long as nothing ever deleted the
-        collection, but 404'd hard (after graph extraction had already
-        run, wasting that work) the moment it didn't exist. Schema
+        collection, but 404'd hard the moment it didn't exist, wasting
+        whatever parsing/embedding work already ran that request. Schema
         mirrors clients/qdrant.py's async init_collections() exactly
         (dense 1024-dim cosine + sparse) — retrieval assumes this exact
         shape, so ingestion creating a different one would silently break

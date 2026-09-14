@@ -7,7 +7,7 @@ from services.api.app.cache.redis import redis_client
 # Single sorted set keyed by corpus_id, score = last-active unix epoch.
 # A ZSET (not native Redis key TTL) is deliberate: purge_expired() below
 # returns the list of ids it removed, giving later phases (3+) a hook to
-# also delete the matching Qdrant points / Neo4j nodes / MinIO objects
+# also delete the matching Qdrant points / MinIO objects
 # when a session expires. Native EXPIRE has no such hook without enabling
 # keyspace notifications.
 ACTIVE_SESSIONS_KEY = "sessions:active"

@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Response, status
 from services.api.app.cache.redis import redis_client
-from services.api.app.clients.neo4j import neo4j_client
 
 router = APIRouter()
 
@@ -19,7 +18,7 @@ async def readiness(response: Response):
     Checks connections to critical dependencies (Redis, DB).
     If this fails, K8s stops sending traffic to this pod.
     """
-    status_report = {"redis": "down", "neo4j": "down"}
+    status_report = {"redis": "down"}
     is_healthy = True
 
     # 1. Check Redis
@@ -29,16 +28,6 @@ async def readiness(response: Response):
             status_report["redis"] = "up"
         else:
             is_healthy = False
-    except Exception:
-        is_healthy = False
-
-    # 2. Check Neo4j (Connectivity only)
-    try:
-        # Driver is singleton, check if initialized
-        if neo4j_client._driver:
-            status_report["neo4j"] = "up"
-        else:
-             is_healthy = False
     except Exception:
         is_healthy = False
 

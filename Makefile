@@ -10,8 +10,6 @@ help:
 	@echo "  make down PROFILE=...            - Remove containers for these profiles (or all if omitted)"
 	@echo ""
 	@echo "  --- Convenience (personal workflow, defaults to your current phase's profiles) ---"
-	@echo "  make build       - Build/rebuild images that need it (ray-head, ray-worker)"
-	@echo "  make upb         - Build + start in one go"
 	@echo "  make stop        - Stop containers, KEEP volumes/data (safe, quick, resume later with 'make up')"
 	@echo "  make restart     - Stop then start again (same profiles)"
 	@echo "  make down-all    - Remove ALL containers, KEEP volumes (heavier than stop, still non-destructive)"
@@ -65,14 +63,17 @@ endif
 # silently defeat up/down's "PROFILE is required" check above, which was a
 # deliberate Phase 0 fix (bare `make up` used to boot the whole stack by
 # accident). Convenience must not weaken that safety property.
-DEFAULT_PROFILES := core,cache,storage,ingestion,vector,graph
+DEFAULT_PROFILES := core,cache,storage,vector
 
 build upb stop restart: PROFILE ?= $(DEFAULT_PROFILES)
 
-# Only ray-head/ray-worker actually need building (custom Dockerfile);
-# everything else uses stock images and 'up' alone is enough for them.
+# Every service now uses a stock image (postgres, redis-stack, qdrant,
+# minio) — nothing left to build locally since Ray's Dockerfile.local was
+# removed along with the ray-head/ray-worker services. Kept as a no-op
+# rather than deleted, so 'make upb' (build+up) doesn't need its own
+# special-cased path.
 build:
-	docker compose build ray-head ray-worker
+	@echo "Nothing to build — all services use stock images."
 
 upb: build
 	docker compose $(profile_flags) up -d
@@ -87,10 +88,10 @@ restart: stop
 	docker compose $(profile_flags) up -d
 
 # Removes containers (frees more RAM/CPU than 'stop') but keeps named
-# volumes -- Qdrant/Neo4j/MinIO data survives, only re-run 'make upb'
-# to come back, no data loss. NOT the same as 'docker compose down -v'.
+# volumes -- Qdrant/MinIO data survives, only re-run 'make upb' to come
+# back, no data loss. NOT the same as 'docker compose down -v'.
 down-all:
-	docker compose down
+	docker compose --profile '*' down
 
 # Run the API locally (Hot Reload)
 dev:

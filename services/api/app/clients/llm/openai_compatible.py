@@ -169,10 +169,12 @@ class OpenAICompatibleClient(LLMClient):
                 # Bug 1 fix: an HTTP 200 with empty/blank content (observed
                 # from groq/compound under load) was previously treated as
                 # success — silently returned, no retry, no failover. That
-                # produced ~15% silent data loss in GraphExtractor (empty
-                # string handed to json.loads() -> "Expecting value" error,
-                # swallowed by its own soft-fail). Empty output is a
-                # failure like any other here now.
+                # produced ~15% silent data loss in the graph-extraction
+                # step this project used to have (empty string handed to
+                # json.loads() -> "Expecting value" error, swallowed by
+                # its own soft-fail). Empty output is a failure like any
+                # other here now — still applies to every LLM call made
+                # today, not just the removed graph step.
                 if not content or not content.strip():
                     raise ValueError(f"model '{model}' returned empty content")
 

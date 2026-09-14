@@ -20,7 +20,6 @@ api = [
     "redis>=5.2.1",
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.30.0",
-    "neo4j>=6.1.0",
     "qdrant-client>=1.17.0",
     "langgraph>=1.1.4",
 ]
@@ -29,26 +28,26 @@ dev = [
     "ruff>=0.15.5",
 ]
 ingestion = [
-    "beautifulsoup4>=4.14.3",
-    "langchain>=1.2.10",
-    "langchain-text-splitters>=1.1.1",
-    "neo4j>=6.1.0",
     "qdrant-client>=1.17.0",
-    "python-docx>=1.1.2",
-    "opendataloader-pdf>=2.5.5",
-    "PyMuPDF>=1.24.0",
     "fastembed>=0.8.0",
-    "pyarrow>=18.0.0",
-    # Not used by the trimmed ingestion pipeline directly — kept for
-    # models/embedding_engine.py (frozen Ray Serve code, Phase 11).
-    "sentence-transformers>=5.2.3",
+    # --- Docling (parser/chunker, loaders/docling_loader.py) ---
+    # Full `docling`, not docling-slim+curated extras — two rounds of
+    # missing-transitive-dependency import errors (rtree, among others)
+    # showed Docling's base pipeline modules (OCR factory, spatial
+    # indexing) get imported regardless of which slim extras are
+    # selected, so hand-picking extras was fighting the package for no
+    # real savings. ONNX-runtime layout/picture-classifier config lives
+    # in docling_loader.py — full `docling` ships both the onnxruntime
+    # and torch engine options, we just select onnxruntime in code.
+    "docling",
+    # HybridChunker's tokenizer — separate from docling-core[chunking]'s
+    # own deps per Docling's own hybrid-chunking examples, which install
+    # it explicitly alongside docling.
+    "transformers>=4.40.0",
 ]
 observability = [
     "opentelemetry-api>=1.40.0",
     "opentelemetry-exporter-otlp>=1.40.0",
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-sdk>=1.40.0",
-]
-ray = [
-    "ray[default]>=2.54.0",
 ]

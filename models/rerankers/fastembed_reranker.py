@@ -13,7 +13,7 @@ class FastEmbedReranker:
 
     def _get_model(self) -> TextCrossEncoder:
         if self._model is None:
-            self._model = TextCrossEncoder(model_name=settings.FASTEMBED_RERANKER_MODEL)
+            self._model = TextCrossEncoder(model_name=settings.FASTEMBED_RERANKER_MODEL, cache_dir=settings.FASTEMBED_CACHE_DIR)
         return self._model
 
     def rerank(self, query: str, documents: list[str]) -> list[float]:

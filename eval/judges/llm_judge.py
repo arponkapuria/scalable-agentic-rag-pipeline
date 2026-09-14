@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 import json
-from services.api.app.clients.ray_llm import llm_client
+from services.api.app.clients.llm.factory import llm_client
 
 class Grade(BaseModel):
     score: int

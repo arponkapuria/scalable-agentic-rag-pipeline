@@ -8,17 +8,17 @@ Two layers:
   L1 (exact match): plain Redis GET on hash(corpus_id + normalized_query).
     Applies to every answer regardless of tool_used.
   L2 (semantic match): RediSearch vector KNN over a corpus_id-tagged
-    index, ~0.85 cosine threshold. ONLY for tool_used in
-    {vector_search, vector_search+graph_search} — never sandbox (numeric
-    precision risk) or web_search (staleness risk), per the locked design.
+    index, ~0.85 cosine threshold. ONLY for tool_used == vector_search —
+    never sandbox (numeric precision risk) or web_search (staleness
+    risk), per the locked design.
 
 Value schema (one Redis key per L1 hash, value = JSON list, capped at
 CACHE_VERSIONS_KEPT entries, newest first):
     [{"corpus_version": int, "answer": str, "sources": [str],
       "tool_used": str, "backend_used": str, "cached_at": iso8601}, ...]
 
-corpus_version comes from pipelines/ingestion/main.py's Redis INCR at the
-end of a successful ingestion job — NOT at upload start (locked design:
+corpus_version comes from pipelines/ingestion/pipeline.py's Redis INCR at
+the end of a successful ingestion job — NOT at upload start (locked design:
 "the corpus hasn't actually changed until indexing finishes").
 
 On a lookup that finds entries but none at the CURRENT corpus_version, the
@@ -162,7 +162,7 @@ class RedisCache:
         (locked design: no invalidation on upload — old entries are kept,
         not deleted, so the before/after comparison has something to show).
         Also writes the L2 vector entry when tool_used is cache-eligible
-        for semantic match (vector_search/graph_search only).
+        for semantic match (vector_search only).
         """
         try:
             client = self._get_client()
@@ -188,7 +188,7 @@ class RedisCache:
             key = self._l1_key(corpus_id, query)
             mapping = {b"entries": json.dumps(entries).encode(), b"corpus_id": corpus_id.encode()}
 
-            l2_eligible = tool_used in ("vector_search", "vector_search+graph_search")
+            l2_eligible = tool_used == "vector_search"
             if l2_eligible:
                 vector = await self._embed_for_cache(query)
                 if vector is not None:

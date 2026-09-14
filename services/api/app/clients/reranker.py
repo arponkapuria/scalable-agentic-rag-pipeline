@@ -14,7 +14,8 @@ via /chat/completions) — measurably less reliable than a real
 cross-encoder (score drift, inconsistent calibration, JSON malformation
 under load), so it's the fallback, not primary. Also faster/free like
 embedding.py's equivalent choice — no network round-trip, no competing
-for the same Groq/OpenRouter rate-limit budget GraphExtractor stresses.
+for the same Groq/OpenRouter rate-limit budget graph extraction used to
+stress before the graph DB was removed from this project.
 """
 import asyncio
 import json

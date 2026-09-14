@@ -26,6 +26,7 @@ def run(coro):
 def _mock_response(content: str) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.raise_for_status = MagicMock()
+    resp.headers = {}
     resp.json.return_value = {"choices": [{"message": {"content": content}}]}
     return resp
 
@@ -131,6 +132,7 @@ def test_failover_does_not_call_backup_when_primary_succeeds():
 def test_build_llm_client_api_backend_groq_primary(monkeypatch):
     monkeypatch.setattr(settings, "LLM_BACKEND", "api")
     monkeypatch.setattr(settings, "API_PRIMARY", "groq")
+    monkeypatch.setattr(settings, "ENABLE_OPENROUTER_FALLBACK", True)
 
     client = build_llm_client()
 
@@ -142,6 +144,7 @@ def test_build_llm_client_api_backend_groq_primary(monkeypatch):
 def test_build_llm_client_api_backend_openrouter_primary(monkeypatch):
     monkeypatch.setattr(settings, "LLM_BACKEND", "api")
     monkeypatch.setattr(settings, "API_PRIMARY", "openrouter")
+    monkeypatch.setattr(settings, "ENABLE_OPENROUTER_FALLBACK", True)
 
     client = build_llm_client()
 

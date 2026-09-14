@@ -19,7 +19,7 @@ Output JSON format ONLY:
     "action": "retrieve" | "direct_answer" | "tool_use",
     "refined_query": "The standalone search query",
     "reasoning": "Why you chose this action",
-    "tool_choice": "graph_search" | "web_search" | null,
+    "tool_choice": "web_search" | null,
     "tool_input": "The exact input to pass to the tool" | null
 }
 """

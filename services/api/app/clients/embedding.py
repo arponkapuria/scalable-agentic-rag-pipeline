@@ -14,7 +14,7 @@ the top priority here:
      different, more confusing failure mode. A fallback that can corrupt
      or silently degrade retrieval accuracy is worse than no fallback.
   2. Speed/cost: FastEmbed is also genuinely faster here — no network
-     round-trip, and it doesn't compete with GraphExtractor for the same
+     round-trip, and it doesn't compete with anything else for the
      Groq/OpenRouter free-tier rate-limit budget during ingestion.
 
 OpenRouterEmbeddingClient is kept below (unused, not wired into

@@ -11,7 +11,7 @@ workflow = StateGraph(AgentState)
 # 1. Define Nodes (The Logic Steps)
 # These functions (imported above) will be implemented in the 'nodes/' folder next
 workflow.add_node("planner", planner_node)       # Rewrites query / Decides steps
-workflow.add_node("retriever", retrieve_node)    # Hits Qdrant & Neo4j
+workflow.add_node("retriever", retrieve_node)    # Hits Qdrant (hybrid dense+sparse+RRF)
 workflow.add_node("responder", generate_node)    # Calls Ray Serve LLM
 workflow.add_node("tool", tool_node)
 

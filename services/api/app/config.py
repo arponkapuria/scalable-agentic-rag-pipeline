@@ -23,11 +23,6 @@ class Settings(BaseSettings):
     QDRANT_PORT: int = 6333
     QDRANT_COLLECTION: str = "omnirag_collection"
     
-    # Graph DB (Neo4j)
-    NEO4J_URI: str = "bolt://neo4j-cluster:7687"
-    NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str # Sensitive
-    
     # AWS S3 (Documents) / MinIO (local S3-API-compatible substitute)
     AWS_REGION: str = "us-east-1"
     S3_BUCKET_NAME: str
@@ -38,14 +33,6 @@ class Settings(BaseSettings):
     # pydantic-settings' extra="ignore" until s3_client.py needed them.
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
-
-    # Ray Job Submission API (ingestion cluster — local head in dev/demo,
-    # real multi-node cluster at prod scale; same JobSubmissionClient call)
-    RAY_ADDRESS: str = "http://localhost:8265"
-    
-    # Ray Serve (Internal LLM/Embeddings) — frozen until Phase 11
-    RAY_LLM_ENDPOINT: str = "http://llm-service:8000/llm"
-    RAY_EMBEDDING_ENDPOINT: str = "http://embed-service:8000/embed"
 
     # --- LLM Backend Selection (Phase 1) ---
     # api = Groq/OpenRouter auto-failover pair (live demo default)
@@ -87,15 +74,21 @@ class Settings(BaseSettings):
     # FastEmbed actually ships. 1024-dim; Qdrant collection sized to match.
     FASTEMBED_MODEL: str = "BAAI/bge-large-en-v1.5"
     FASTEMBED_RERANKER_MODEL: str = "BAAI/bge-reranker-base"
+    # Explicit, persistent cache dir for ALL FastEmbed models (dense
+    # embedder, sparse/BM25 embedder, reranker) — FastEmbed's own default
+    # (cache_dir=None) falls back to a subdirectory of the SYSTEM TEMP
+    # dir (documented upstream issue: qdrant/fastembed#569). On macOS,
+    # /var/folders/*/T/ gets cleaned by the OS — this is exactly what
+    # produced the "NO_SUCHFILE ... model.onnx failed" crash mid-request:
+    # the reranker's cached weights were wiped out from under a running
+    # app between sessions, not a corrupted download. `~/.cache/fastembed`
+    # survives reboots/cleanup like `~/.cache/huggingface` (Docling's own
+    # cache location) already does.
+    FASTEMBED_CACHE_DIR: str = os.path.expanduser("~/.cache/fastembed")
     # Fallback on local failure — OpenRouter free-tier models, reuses
     # OPENROUTER_API_KEY from the LLM backend config above.
     OPENROUTER_EMBED_MODEL: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
     OPENROUTER_RERANK_MODEL: str = "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
-
-    # Retrieval routing: corpora with more than this many distinct
-    # documents also query Neo4j (multi-hop/citation questions), not just
-    # Qdrant — a single-paper corpus has no graph worth querying.
-    GRAPH_SEARCH_MIN_DOCUMENTS: int = 2
 
     # RRF fusion + reranking
     RRF_K: int = 60  # standard RRF damping constant
@@ -103,9 +96,9 @@ class Settings(BaseSettings):
 
     # --- Caching (Phase 5, Redis Stack) ---
     # L1 exact-match always applies. L2 semantic-match (RediSearch vector
-    # KNN) only applies to RAG-sourced answers (vector_search/graph_search)
-    # — never sandbox/web_search, per the locked design (staleness/
-    # precision risk for those).
+    # KNN) only applies to RAG-sourced answers (vector_search) — never
+    # sandbox/web_search, per the locked design (staleness/precision risk
+    # for those).
     SEMANTIC_CACHE_THRESHOLD: float = 0.85
     CACHE_VERSIONS_KEPT: int = 2  # historical corpus_version entries kept per cache key (before/after comparison)
 
@@ -117,22 +110,31 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_VISION_MODEL: str = "gemini-3.5-flash-lite"
 
-    # --- Ingestion execution backend ---
-    # in_process (default): runs inline in the FastAPI process as a
-    # background task, no separate Ray cluster needed for local/demo dev.
-    # ray: the original pipelines/ingestion/main.py Ray Data path (frozen,
-    # kept for later re-activation — see PROGRESS.md carry-over notes).
-    INGESTION_BACKEND: str = "in_process"
-    # Chunks per GraphExtractor LLM call — batching multiple chunks into
-    # one call is what keeps this from being 1 Groq call per chunk.
-    # 2, not the originally-planned 8-10: live testing showed
-    # qwen/qwen3.8-27b has a hard 1000-output-token-per-request ceiling
-    # (not a volume/throttling limit — ANY single request asking for
-    # >=1000 max_tokens is rejected outright, every time). At ~350 tokens/
-    # chunk for graph JSON output, batch_size=8 (2800 tokens) made qwen
-    # permanently unable to serve batch calls at all. 2 keeps requests
-    # comfortably under every configured model's real ceiling.
-    GRAPH_EXTRACTION_BATCH_SIZE: int = 2
+    # --- Docling parsing/chunking (in-process pipeline only — see
+    # loaders/docling_loader.py) ---
+    # Off by default: literature-survey PDFs are assumed born-digital.
+    # RapidOCR (Docling's default OCR engine) uses ONNXRuntime, not torch,
+    # so flipping this on doesn't add a torch dependency — safe to enable
+    # if you hit scanned documents.
+    PDF_ENABLE_OCR: bool = False
+    # TableFormer has no ONNX path in mainline Docling (confirmed via
+    # Docling's own technical report — PyTorch-only for inference), so
+    # this only trades speed for quality, not resource type. "accurate"
+    # matches the project's accuracy-first priority ordering; "fast" is
+    # there for faster local iteration if table-heavy PDFs are slow on
+    # the M1.
+    TABLE_STRUCTURE_MODE: str = "accurate"  # "accurate" | "fast"
+    # Derived from FASTEMBED_MODEL's own tokenizer if unset — HybridChunker
+    # needs a token ceiling that actually matches the embedder, not an
+    # independent guess.
+    CHUNK_MAX_TOKENS: int = 512
+    # Comma-separated picture-classifier labels to skip captioning for
+    # (saves a Gemini call per skipped image). Empty by default — the
+    # classifier's real label set isn't confirmed against a live run yet;
+    # check logs/ingest_debug/{corpus_id}/docling_pictures.json after a
+    # real ingestion and populate this once you've seen actual labels
+    # (e.g. "logo,icon") rather than guessing.
+    PICTURE_SKIP_CLASSES: str = ""
 
     # --- OpenRouter fallback toggle (LLM + reranker) ---
     # False (default): Groq/FastEmbed run with no backup. Config-gated,
@@ -177,6 +179,15 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
+
+    @field_validator("FASTEMBED_CACHE_DIR", mode="before")
+    @classmethod
+    def _expand_cache_dir(cls, v):
+        """~ isn't shell-expanded when read from a .env file (python-dotenv
+        treats it as a literal character) — expanduser here guarantees a
+        real path regardless of whether this came from the Python default
+        above or an actual .env override."""
+        return os.path.expanduser(v) if isinstance(v, str) else v
 
     class Config:
         env_file = ".env" if os.path.exists(".env") else None
