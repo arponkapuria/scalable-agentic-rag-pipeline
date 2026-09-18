@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from services.api.app.clients.embedding import embedding_client
 from services.api.app.config import settings
+from services.api.app.memory.postgres import document_store
 from libs.utils.s3_client import get_s3_client
 
 from models.embeddings.fastembed_client import fastembed_client
@@ -99,32 +100,65 @@ def bump_corpus_version(corpus_id: str) -> None:
         client.close()
 
 
+def _file_id_from_key(file_key: str) -> str:
+    """Keys are uploads/{corpus_id}/{file_id}.ext — file_id is the stem,
+    matching what upload.py generated and stored as Document.file_id.
+    No new data needs threading through the MinIO webhook payload."""
+    stem = file_key.rsplit("/", 1)[-1]
+    return stem.rsplit(".", 1)[0] if "." in stem else stem
+
+
 async def run_ingestion(bucket: str, file_key: str) -> None:
     """Entry point called from the MinIO webhook route as a FastAPI
-    BackgroundTask."""
+    BackgroundTask. Each stage's Document.status update (Phase 6) is
+    best-effort — a DB hiccup here shouldn't abort ingestion itself, it
+    just means ingest/status temporarily lags reality until the next
+    stage's write succeeds."""
     corpus_id = _corpus_id_from_key(file_key)
-    filename = file_key.rsplit("/", 1)[-1]
+    file_id = _file_id_from_key(file_key)
     logger.info(f"[ingest:{corpus_id}] stage=start file=s3://{bucket}/{file_key}")
 
+    async def _set_status(status: str, error: str | None = None) -> None:
+        try:
+            await document_store.set_status(file_id, status, error)
+        except Exception as e:
+            logger.warning(f"[ingest:{corpus_id}] failed to update Document status={status}: {e}")
+
+    # Real filename for Docling/chunk metadata — NOT the S3 key stem
+    # ({file_id}.ext). Fixing a real bug here: chunk metadata's "filename"
+    # field previously got the S3 key stem, which flows straight into
+    # retriever.py's sources list and the responder's "[Source: X]"
+    # citation, showing users a meaningless UUID instead of their actual
+    # filename. The Document row (created in upload.py) already has the
+    # real name — this just uses it instead of re-deriving a fake one.
+    doc = await document_store.get_by_file_id(file_id)
+    filename = doc.filename if doc else file_key.rsplit("/", 1)[-1]
+
     try:
+        await _set_status("fetching")
         content = await _fetch_object(bucket, file_key)
         logger.info(f"[ingest:{corpus_id}] stage=fetch status=done bytes={len(content)}")
 
+        await _set_status("parsing")
         chunks = await _parse_and_chunk(content, filename, corpus_id)
         logger.info(f"[ingest:{corpus_id}] stage=parse_chunk status=done chunks={len(chunks)}")
         dump_debug_artifact(corpus_id, "chunks", chunks)
 
         texts = [c["text"] for c in chunks]
 
+        await _set_status("embedding")
         dense, sparse = await _embed(texts)
         logger.info(f"[ingest:{corpus_id}] stage=embed status=done vectors={len(dense)}")
 
+        await _set_status("indexing")
         await asyncio.to_thread(_index_qdrant, chunks, dense, sparse, corpus_id)
         logger.info(f"[ingest:{corpus_id}] stage=index_qdrant status=done")
 
         await asyncio.to_thread(bump_corpus_version, corpus_id)
+        await document_store.set_complete(file_id, chunk_count=len(chunks))
         logger.info(f"[ingest:{corpus_id}] stage=complete status=done")
 
     except Exception as e:
         logger.error(f"[ingest:{corpus_id}] stage=failed error={e}", exc_info=True)
+        await _set_status("failed", error=str(e))
         raise

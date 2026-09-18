@@ -31,8 +31,12 @@ async def tool_node(state: AgentState) -> dict:
         result = await search_vector_tool(tool_input, state["corpus_id"])
     
     elif tool_name == "web_search":
-        logger.info(f"Executing Web Search: {tool_input}")
-        result = await web_search_tool(tool_input)
+        # Fallback if the planner's tool_input extraction came back empty
+        # (e.g. the offer's echoed topic wasn't cleanly parsed) — better
+        # than searching for an empty string.
+        search_query = tool_input or state.get("current_query") or ""
+        logger.info(f"Executing Web Search: {search_query}")
+        result = await web_search_tool(search_query)
 
     elif tool_name == "sandbox":
         logger.info(f"Executing Python Sandbox: {tool_input}")
@@ -45,9 +49,12 @@ async def tool_node(state: AgentState) -> dict:
     # Phase 5's L2 semantic cache is gated on this: only vector_search is
     # cache-eligible there, web_search (staleness) and sandbox (numeric
     # precision) are never L2-cached, matching the locked design.
+    # tool_result carries the raw output separately (Phase 6 follow-up) —
+    # see generate_node's sandbox branch for why.
     return {
         "messages": [
             {"role": "user", "content": f"Tool Output: {result}"}
         ],
         "tool_used": tool_name,
+        "tool_result": result,
     }

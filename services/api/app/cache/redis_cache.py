@@ -5,12 +5,19 @@ which pointed at the dead Ray Serve embed endpoint and only did a single
 Qdrant-based semantic match with no versioning at all.
 
 Two layers:
-  L1 (exact match): plain Redis GET on hash(corpus_id + normalized_query).
-    Applies to every answer regardless of tool_used.
+  L1 (exact match): plain Redis GET on
+    cache:{corpus_id}:{CACHE_SCHEMA_VERSION}:{hash(normalized_query)} —
+    corpus_id and CACHE_SCHEMA_VERSION are plaintext key segments (Phase
+    6), not hashed in, specifically so cascade-delete can SCAN the key
+    space directly by corpus_id and so bumping CACHE_SCHEMA_VERSION
+    orphans every old entry by construction. Applies to every answer
+    regardless of tool_used.
   L2 (semantic match): RediSearch vector KNN over a corpus_id-tagged
-    index, ~0.85 cosine threshold. ONLY for tool_used == vector_search —
-    never sandbox (numeric precision risk) or web_search (staleness
-    risk), per the locked design.
+    index, ~0.85 cosine threshold, PLUS a lexical token-overlap gate
+    (SEMANTIC_CACHE_LEXICAL_OVERLAP, Phase 6 follow-up) — see get_semantic's
+    docstring for why dense similarity alone isn't sufficient. ONLY for
+    tool_used == vector_search — never sandbox (numeric precision risk) or
+    web_search (staleness risk), per the locked design.
 
 Value schema (one Redis key per L1 hash, value = JSON list, capped at
 CACHE_VERSIONS_KEPT entries, newest first):
@@ -108,8 +115,20 @@ class RedisCache:
 
     @classmethod
     def _l1_key(cls, corpus_id: str, query: str) -> str:
-        digest = hashlib.sha256(f"{corpus_id}:{cls._normalize(query)}".encode()).hexdigest()
-        return f"{KEY_PREFIX}{digest}"
+        """cache:{corpus_id}:{schema_version}:{hash(query)} — corpus_id and
+        CACHE_SCHEMA_VERSION are kept as plaintext key segments (Phase 6),
+        not hashed in, specifically so cascade-delete can SCAN MATCH
+        cache:{corpus_id}:* directly against the key space, without
+        depending on the RediSearch index (which exists for L2 semantic
+        *search*, a different job, and only covers L2-eligible entries
+        anyway). Only the query itself is unbounded-length/arbitrary-
+        character, so only it still needs hashing.
+        Bumping CACHE_SCHEMA_VERSION changes this key for every future
+        write, orphaning every entry under the old version automatically —
+        this is what actually makes that field do what the design always
+        intended (previously declared but never implemented)."""
+        digest = hashlib.sha256(cls._normalize(query).encode()).hexdigest()
+        return f"{KEY_PREFIX}{corpus_id}:{settings.CACHE_SCHEMA_VERSION}:{digest}"
 
     async def _get_corpus_version(self, corpus_id: str) -> int:
         client = self._get_client()
@@ -156,6 +175,7 @@ class RedisCache:
         sources: list[str],
         tool_used: str,
         backend_used: str,
+        model_used: str = "",
     ):
         """
         Writes/prepends the new entry, capped at CACHE_VERSIONS_KEPT
@@ -180,13 +200,22 @@ class RedisCache:
                     "sources": sources,
                     "tool_used": tool_used,
                     "backend_used": backend_used,
+                    "model_used": model_used,
                     "cached_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
             entries = entries[: settings.CACHE_VERSIONS_KEPT]
 
             key = self._l1_key(corpus_id, query)
-            mapping = {b"entries": json.dumps(entries).encode(), b"corpus_id": corpus_id.encode()}
+            mapping = {
+                b"entries": json.dumps(entries).encode(),
+                b"corpus_id": corpus_id.encode(),
+                # Normalized query text — Phase 6 addition, needed by
+                # get_semantic's lexical-overlap gate (see its docstring).
+                # Not used for L1 lookup (the key hash already IS this
+                # value) — only read back on an L2 KNN match.
+                b"query": self._normalize(query).encode(),
+            }
 
             l2_eligible = tool_used == "vector_search"
             if l2_eligible:
@@ -195,6 +224,12 @@ class RedisCache:
                     mapping[b"vector"] = vector
 
             await client.hset(key, mapping=mapping)
+            # Backstop TTL (Phase 6) — not the primary invalidation
+            # mechanism (corpus_version/CACHE_SCHEMA_VERSION/cascade-
+            # delete are); this only bounds the worst case if one of
+            # those ever misses an entry. Re-set on every write, so an
+            # actively-used entry's expiry keeps sliding forward.
+            await client.expire(key, settings.CACHE_TTL_SECONDS)
 
         except Exception as e:
             logger.warning(f"Failed to write cache entry: {e}")
@@ -217,6 +252,30 @@ class RedisCache:
             logger.warning(f"Failed to embed query for cache: {e}")
             return None
 
+    @staticmethod
+    def _lexical_overlap(query_a: str, query_b: str) -> float:
+        """Jaccard token overlap between two ALREADY-normalized query
+        strings — the secondary gate get_semantic applies alongside dense
+        cosine similarity (see that method's docstring for why). Simple
+        on purpose, matching model_router.py's own stated philosophy for
+        this codebase's heuristics: real mechanism, not a state-of-the-art
+        classifier."""
+        tokens_a, tokens_b = set(query_a.split()), set(query_b.split())
+        if not tokens_a or not tokens_b:
+            return 0.0
+        return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
+    @staticmethod
+    def _length_ratio(query_a: str, query_b: str) -> float:
+        """Third gate (Phase 6 follow-up) — see SEMANTIC_CACHE_MIN_LENGTH_RATIO's
+        config.py docstring for the live failure this catches that
+        _lexical_overlap alone cannot (containment: a compound question's
+        cached answer served for one of its own narrower clauses)."""
+        len_a, len_b = len(query_a.split()), len(query_b.split())
+        if len_a == 0 or len_b == 0:
+            return 0.0
+        return min(len_a, len_b) / max(len_a, len_b)
+
     # --- L2: semantic match ---
 
     async def get_semantic(self, corpus_id: str, query: str) -> dict[str, Any] | None:
@@ -225,6 +284,25 @@ class RedisCache:
         cache-eligible (RAG-sourced) entries — those are the only ones
         set_exact() ever writes a vector for, so a semantic hit is
         implicitly tool-gated already.
+
+        Gated on vector similarity AND lexical token overlap (Phase 6
+        follow-up) — dense cosine similarity alone is not sufficient.
+        Live-observed false positive: "How is the Transformer different
+        from LSTM?" vs. "Does the Transformer improve upon LSTM?" scored
+        0.956 cosine similarity (bge-large-en-v1.5) despite being
+        different questions — comparison vs. justification-of-improvement
+        — that a human reader would not treat as equivalent. Raising the
+        threshold would NOT have caught this specific case (0.956 clears
+        any reasonable bar); the actual problem is that dense embeddings
+        alone don't encode this distinction reliably. Consistent with
+        this codebase's own existing answer to the same class of problem
+        for document retrieval — hybrid dense+BM25, not dense-only — this
+        applies the same principle to cache matching: a candidate KNN hit
+        must ALSO share a minimum fraction of content words with the
+        cached query before being served. Conservative on purpose: a
+        false negative here just means a full pipeline run (correct,
+        slightly slower); a false positive means silently serving the
+        wrong answer.
         """
         await self._ensure_index()
         try:
@@ -256,20 +334,73 @@ class RedisCache:
                 return None
 
             matched_key = top.id.encode() if isinstance(top.id, str) else top.id
-            raw = await client.hget(matched_key, b"entries")
-            if not raw:
+            raw_entries, raw_query = await client.hmget(matched_key, [b"entries", b"query"])
+            if not raw_entries:
                 return None
-            entries = json.loads(raw)
+
+            # Lexical gate — see docstring. raw_query is absent for
+            # entries written before this field existed (pre-Phase-6-fix);
+            # treat that as a miss rather than either falsely passing or
+            # crashing, since there's nothing to compare against.
+            if not raw_query:
+                logger.info("L2 candidate has no stored query text (pre-fix entry) — treating as miss")
+                return None
+            overlap = self._lexical_overlap(self._normalize(query), raw_query.decode())
+            if overlap < settings.SEMANTIC_CACHE_LEXICAL_OVERLAP:
+                logger.info(
+                    f"L2 candidate rejected: similarity={similarity:.3f} cleared threshold "
+                    f"but lexical_overlap={overlap:.2f} did not (< {settings.SEMANTIC_CACHE_LEXICAL_OVERLAP})"
+                )
+                return None
+
+            length_ratio = self._length_ratio(self._normalize(query), raw_query.decode())
+            if length_ratio < settings.SEMANTIC_CACHE_MIN_LENGTH_RATIO:
+                logger.info(
+                    f"L2 candidate rejected: similarity={similarity:.3f} and lexical_overlap={overlap:.2f} "
+                    f"cleared their bars, but length_ratio={length_ratio:.2f} did not "
+                    f"(< {settings.SEMANTIC_CACHE_MIN_LENGTH_RATIO}) — likely a narrower "
+                    f"sub-question of a broader cached (possibly compound) question."
+                )
+                return None
+
+            entries = json.loads(raw_entries)
             current_version = await self._get_corpus_version(corpus_id)
             for entry in entries:
                 if entry["corpus_version"] == current_version:
-                    logger.info(f"L2 semantic cache hit (similarity={similarity:.3f})")
+                    logger.info(
+                        f"L2 semantic cache hit (similarity={similarity:.3f}, "
+                        f"lexical_overlap={overlap:.2f}, length_ratio={length_ratio:.2f})"
+                    )
                     return entry
             return None
 
         except Exception as e:
             logger.warning(f"L2 semantic cache lookup failed: {e}")
             return None
+
+    async def delete_by_corpus_id(self, corpus_id: str) -> int:
+        """Cascade-delete hook for session expiry (session/cleanup.py) —
+        closes the previously-known gap where Redis L1/L2 cache entries
+        for an expired corpus_id were never cleaned up (unreachable after
+        expiry, since corpus_id is server-derived and can't be presented
+        again, but a genuine slow memory leak over long uptimes).
+        SCAN (cursor-based, non-blocking), not KEYS — safe to run against
+        a live Redis instance serving other requests concurrently. Works
+        directly off the key space (see _l1_key's docstring for why
+        corpus_id is a plaintext key segment) rather than the RediSearch
+        index, so this doesn't depend on that index being healthy.
+        Returns the number of keys deleted, for logging."""
+        client = self._get_client()
+        pattern = f"{KEY_PREFIX}{corpus_id}:*".encode()
+        deleted = 0
+        cursor = 0
+        while True:
+            cursor, keys = await client.scan(cursor=cursor, match=pattern, count=100)
+            if keys:
+                deleted += await client.delete(*keys)
+            if cursor == 0:
+                break
+        return deleted
 
     async def close(self):
         if self._redis:

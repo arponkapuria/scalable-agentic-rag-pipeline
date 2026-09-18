@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from services.api.app.config import settings
 from services.api.app.session.dependency import get_corpus_id
+from services.api.app.memory.postgres import document_store
 from libs.utils.s3_client import get_s3_client
 import uuid
 
@@ -21,6 +22,10 @@ class PresignedURLResponse(BaseModel):
     upload_url: str
     file_id: str
     s3_key: str
+    corpus_id: str  # frontend needs this verbatim to set the matching
+                     # x-amz-meta-corpus_id header on its PUT — it can't
+                     # read the httpOnly session cookie itself (Phase 2's
+                     # cookie is deliberately httpOnly, JS can't see it).
 
 # endpoints
 @router.post("/generate-presigned-url", response_model=PresignedURLResponse)
@@ -54,11 +59,18 @@ async def generate_upload_url(
             },
             ExpiresIn=3600 # URL valid for 1 hour
         )
-        
+
+        # Persisted row for ingest/status + corpus/documents (Phase 6) —
+        # created here, at issuance, not on webhook receipt. The webhook
+        # only fires once the client's PUT actually completes, so status
+        # is "pending" (not yet uploaded/processed) until then.
+        await document_store.create_pending(file_id, corpus_id, req.filename, s3_key)
+
         return PresignedURLResponse(
             upload_url=url,
             file_id=file_id,
-            s3_key=s3_key
+            s3_key=s3_key,
+            corpus_id=corpus_id,
         )
 
     except Exception as e:

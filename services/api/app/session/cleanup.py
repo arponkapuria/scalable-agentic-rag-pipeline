@@ -5,6 +5,7 @@ from services.api.app.config import settings
 from services.api.app.session.store import session_store
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.memory.postgres import postgres_memory
+from services.api.app.cache.redis_cache import redis_cache
 from libs.utils.s3_client import delete_corpus_objects
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,14 @@ async def _cascade_delete(corpus_id: str) -> None:
     await qdrant_client.delete_by_corpus_id(corpus_id)
     await postgres_memory.delete_by_corpus_id(corpus_id)
     deleted_objects = await asyncio.to_thread(delete_corpus_objects, corpus_id)
-    logger.info(f"Cascade-deleted corpus {corpus_id}: Qdrant points, Postgres rows, {deleted_objects} MinIO object(s).")
+    # Closes the previously-known gap (see redis_cache.py's
+    # delete_by_corpus_id docstring) — L1/L2 cache entries for this
+    # corpus are now part of the cascade, not left to leak.
+    deleted_cache_keys = await redis_cache.delete_by_corpus_id(corpus_id)
+    logger.info(
+        f"Cascade-deleted corpus {corpus_id}: Qdrant points, Postgres rows, "
+        f"{deleted_objects} MinIO object(s), {deleted_cache_keys} Redis cache key(s)."
+    )
 
 
 async def _cleanup_loop() -> None:

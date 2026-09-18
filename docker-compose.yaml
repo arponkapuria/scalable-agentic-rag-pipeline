@@ -36,6 +36,27 @@ services:
     volumes:
       - omnirag_qdrant_data:/qdrant/storage
 
+  # Sandbox code-exec service — profile: sandbox. Was never added here
+  # despite PROJECT_INSTRUCTIONS.md's profile table and Phase 6 both
+  # listing it as required; sandbox.py's hardcoded K8s-only hostname
+  # ("sandbox-service") also could never have resolved from a host-run
+  # `make dev` process even if this block had existed — see config.py's
+  # SANDBOX_URL comment. Port published to localhost, matching every
+  # other local service here, since the API runs on the HOST, not in
+  # Docker, for local dev.
+  sandbox:
+    build: ./services/sandbox
+    container_name: omnirag-sandbox
+    profiles: ["sandbox"]
+    ports:
+      - "8080:8080"
+    mem_limit: 256m
+    # network-policy.yaml's egress-deny is a K8s NetworkPolicy resource —
+    # has no Docker Compose equivalent, so it is NOT enforced locally.
+    # This is a real, known gap for the local/demo build (PROJECT_INSTRUCTIONS.md
+    # flags this exact requirement) — tracked in PROGRESS.md's Open Problems,
+    # not silently ignored.
+
   # 4. MinIO (S3-compatible object storage) — profile: storage
   minio:
     image: minio/minio

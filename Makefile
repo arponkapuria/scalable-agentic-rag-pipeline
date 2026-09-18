@@ -22,7 +22,7 @@ help:
 
 # Install dependencies using uv
 install:
-	uv sync --group api --group dev
+	uv sync --group api --group dev --group ingestion
 
 # Run Local Development Environment (Docker services)
 # 8GB RAM dev box: never bring up the full stack. Usage: make up PROFILE=core
@@ -63,7 +63,7 @@ endif
 # silently defeat up/down's "PROFILE is required" check above, which was a
 # deliberate Phase 0 fix (bare `make up` used to boot the whole stack by
 # accident). Convenience must not weaken that safety property.
-DEFAULT_PROFILES := core,cache,storage,vector
+DEFAULT_PROFILES := core,cache,storage,vector,sandbox
 
 build upb stop restart: PROFILE ?= $(DEFAULT_PROFILES)
 

@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 import services.api.app.logging  # noqa: F401 — import alone runs setup_logging()
                                   # via the module's own "initialize on
@@ -21,10 +22,10 @@ from services.api.app.clients.llm.factory import llm_client
 from services.api.app.clients.llm.gemini_client import gemini_client
 from services.api.app.cache.redis import redis_client
 from services.api.app.cache.redis_cache import redis_cache
-from services.api.app.memory.models import Base, ChatHistory, Feedback
-from services.api.app.memory.postgres import engine
+from services.api.app.memory.models import Base, ChatHistory, Feedback, Document
+from services.api.app.memory.postgres import engine, document_store
 from services.api.app.session.cleanup import start_cleanup_task, stop_cleanup_task
-from services.api.app.routes import chat, upload, health, feedback, session, webhooks
+from services.api.app.routes import chat, upload, health, feedback, session, webhooks, ingest_status, corpus
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,6 +37,15 @@ async def lifespan(app: FastAPI):
     # Create all tables defined in models.py
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Orphan reconciliation (Phase 6 follow-up) — any Document row still
+    # in a non-terminal status at boot belonged to a process that no
+    # longer exists (this process just started), so it can never
+    # complete or self-report failure. Without this, a killed server
+    # leaves such rows stuck forever and the frontend polls them forever.
+    orphaned = await document_store.fail_orphaned()
+    if orphaned:
+        print(f"Marked {orphaned} orphaned document(s) as failed (interrupted by a previous restart).")
 
     # 1. Startup
     print("Initializing clients...")
@@ -73,6 +83,14 @@ app.include_router(upload.router, prefix="/api/v1/upload", tags=["Upload"])
 app.include_router(health.router, prefix="/health", tags=["Health"])
 app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["Feedback"])
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["Webhooks"])
+app.include_router(ingest_status.router, prefix="/api/v1/ingest", tags=["Ingest"])
+app.include_router(corpus.router, prefix="/api/v1/corpus", tags=["Corpus"])
+
+# Chat UI ("Version B", Phase 6) — one static HTML file, no build step,
+# served directly by FastAPI so the whole app is one deployable unit
+# (matters for Phase 8's single free-tier VM). html=True serves index.html
+# at "/".
+app.mount("/", StaticFiles(directory="services/api/static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn

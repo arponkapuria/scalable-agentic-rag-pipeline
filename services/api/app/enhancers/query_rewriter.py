@@ -1,5 +1,6 @@
 from typing import List, Dict
 from services.api.app.clients.llm.factory import llm_client
+from libs.utils.model_router import route_model
 
 SYSTEM_PROMPT = """
 You are a Query Rewriter. 
@@ -44,6 +45,16 @@ async def rewrite_query(question: str, history: List[Dict[str, str]]) -> str:
             max_tokens=64,    # A search query is a handful of words; caps
                                # runaway generation even if the model
                                # ignores "output only the query."
+            # Same routing rule as planner.py (model_router.py's existing
+            # complexity heuristic) instead of a blanket MODEL_TIER_SIMPLE
+            # pin — consistent choice across every call site that needs
+            # model-tier routing. Falls through to the rest of Groq's
+            # model list on failure (see openai_compatible.py), so one
+            # bad response from the chosen tier doesn't silently fall
+            # back to returning the un-rewritten question (which is what
+            # this function's own except-clause below does, and which
+            # was happening on every call while the pin had no fallback).
+            model=route_model(question),
         )
         rewritten = rewritten.strip()
 

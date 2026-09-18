@@ -46,8 +46,11 @@ class OpenAICompatibleClient(LLMClient):
       across all configured models with SEPARATE budgets instead of
       always exhausting models[0] first.
     - `chat_completion(..., model=X)`: caller pins one specific model,
-      skipping the list walk entirely (used by heuristic model-tier
-      routing and any single-model client like Gemini captioning).
+      tried FIRST, before the rest of this backend's own priority list —
+      used by heuristic model-tier routing and any single-model client
+      like Gemini captioning. Falls through to the remaining models on
+      failure rather than raising immediately (a pin expresses "prefer
+      this one," not "only ever try this one").
 
     A circuit breaker sits in front of the whole backend: once
     CIRCUIT_FAILURE_THRESHOLD consecutive ModelExhaustedErrors happen
@@ -82,6 +85,15 @@ class OpenAICompatibleClient(LLMClient):
         # rest. Not used for "priority" backends (OpenRouter's budget is
         # account-level anyway, so rotation buys nothing there).
         self._rr_index = 0
+        # Populated on every successful chat_completion() — the actual
+        # model id that answered (Phase 6 follow-up), separate from
+        # last_backend_used (FailoverLLMClient, one level up) which only
+        # tracks WHICH BACKEND (Groq vs OpenRouter), not which of that
+        # backend's several models actually responded. Needed to show
+        # this in the UI, and to stop the earlier "which model actually
+        # answered" mystery that only server logs could (sometimes)
+        # answer, and only for paths that explicitly logged it.
+        self.last_model_used: str = ""
 
     async def start(self):
         if not self.models:
@@ -120,11 +132,20 @@ class OpenAICompatibleClient(LLMClient):
         except CircuitOpenError as e:
             raise ModelExhaustedError(str(e)) from e
 
-        # Caller pinned a specific model (e.g. heuristic routing) —
-        # bypass the priority/round-robin walk entirely and try only
-        # that one. Still budget/circuit-checked like any other call.
+        # Caller pinned a specific model (e.g. heuristic routing) — tried
+        # FIRST (so routing/consistency intent is honored), but falls
+        # through to the rest of this backend's priority list on failure
+        # rather than raising immediately. Real regression this fixes:
+        # a bare single-model pin with no fallback meant one bad response
+        # (e.g. empty content) from that one model failed the whole call,
+        # even though this backend has other models with separate
+        # budgets that could have served it — live-observed for
+        # planner/query-rewriter after they were pinned to
+        # MODEL_TIER_SIMPLE and that model started returning empty
+        # content repeatedly. responder.py's routed_model pin had this
+        # same exposure since Phase 3-5, just not yet triggered live.
         if model is not None:
-            models_to_try = [model]
+            models_to_try = [model] + [m for m in self.models if m != model]
         elif self._dispatch_strategy == "round_robin" and self.models:
             i = self._rr_index % len(self.models)
             models_to_try = self.models[i:] + self.models[:i]
@@ -179,6 +200,7 @@ class OpenAICompatibleClient(LLMClient):
                     raise ValueError(f"model '{model}' returned empty content")
 
                 self._circuit.record_success()
+                self.last_model_used = model
                 return content
             except (httpx.HTTPStatusError, httpx.TransportError) as e:
                 last_error = e

@@ -1,9 +1,6 @@
 import httpx
 from services.api.app.config import settings
 
-# Helper to find the Sandbox Service in K8s
-SANDBOX_URL = "http://sandbox-service:8080/execute"
-
 async def run_python_code(code: str) -> str:
     """
     Tool: Python Code Interpreter.
@@ -13,9 +10,16 @@ async def run_python_code(code: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                SANDBOX_URL,
+                settings.SANDBOX_URL,
                 json={"code": code, "timeout": 5},
-                timeout=6.0
+                # Must exceed runner.py's own worst-case response time
+                # (soft_timeout_seconds=8 in limits.yaml + up to 2s grace
+                # period for SIGTERM before SIGKILL = ~10s), or the
+                # CLIENT aborts first with a raw connection-timeout
+                # exception instead of letting the server's own graceful
+                # timeout handling return a clean 408 — found live while
+                # fixing the sandbox's missing dependencies.
+                timeout=12.0
             )
             
             if response.status_code == 200:

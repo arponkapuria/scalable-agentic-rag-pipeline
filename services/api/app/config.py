@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     VLLM_METAL_URL: str = "http://localhost:8001"
     VLLM_METAL_MODELS: Annotated[List[str], NoDecode] = []
     VLLM_MODAL_URL: Optional[str] = None
+
+    # Sandbox code-exec service (services/sandbox/). Defaults to
+    # localhost with a published port for local Docker Compose dev,
+    # matching every other service URL's pattern here (DATABASE_URL,
+    # REDIS_URL, etc. are all .env-configurable, never hardcoded).
+    # Real bug found live: sandbox.py previously hardcoded
+    # "http://sandbox-service:8080" — a K8s-internal-DNS-style hostname
+    # left over from the original cloud-scale design, never adapted when
+    # local dev (host-run API + Docker Compose) was introduced. It could
+    # never resolve from the host-run `make dev` process, so every
+    # sandbox call failed with a connection error — which the responder's
+    # conversational LLM then glossed as "I don't have the ability to run
+    # code," misrepresenting an infra gap as a capability limitation.
+    # Override to the K8s Service DNS name for a real cluster deployment.
+    SANDBOX_URL: str = "http://localhost:8080/execute"
     VLLM_MODAL_API_KEY: Optional[str] = None
     VLLM_MODAL_MODELS: Annotated[List[str], NoDecode] = []
 
@@ -100,7 +115,45 @@ class Settings(BaseSettings):
     # sandbox/web_search, per the locked design (staleness/precision risk
     # for those).
     SEMANTIC_CACHE_THRESHOLD: float = 0.85
+    # Secondary gate alongside cosine similarity (Phase 6 follow-up) — see
+    # redis_cache.py::get_semantic's docstring. 0.5 chosen against a real
+    # observed false positive: "different from" vs. "improve upon" (same
+    # two entities, different question) scored ~0.27 Jaccard overlap,
+    # comfortably below this bar, while genuine paraphrases of the same
+    # question typically share most content words. Conservative by
+    # design — a miss just costs a full pipeline run, not a wrong answer.
+    SEMANTIC_CACHE_LEXICAL_OVERLAP: float = 0.5
+    # Second, separate gate from lexical overlap above — catches a
+    # DIFFERENT failure mode. Jaccard overlap alone is structurally blind
+    # to containment: if Q2's tokens are a strict subset of cached-Q1's
+    # tokens (e.g. Q1="A and B", Q2="A" alone), overlap = |Q2|/|Q1| is
+    # high by construction regardless of whether Q2 is a genuine
+    # paraphrase or a narrower sub-question of a compound one. Live
+    # cases: "how is it different from lstm?" (7 tokens) against a cached
+    # "...different from lstm and how does it improve from lstm?" (10
+    # tokens, Q2's 7 fully contained) scored 0.70 overlap; "does it
+    # improve lstm?" (5 tokens) scored 0.50 — both incorrectly served the
+    # full compound answer for a narrower question. A true paraphrase of
+    # the same question is usually similar in content-word count (same
+    # information, different wording); a sub-clause of a compound
+    # question is not (it conveys less) — length ratio targets exactly
+    # that distinction, which overlap cannot.
+    SEMANTIC_CACHE_MIN_LENGTH_RATIO: float = 0.8
     CACHE_VERSIONS_KEPT: int = 2  # historical corpus_version entries kept per cache key (before/after comparison)
+    # Second, independent invalidation axis from corpus_version — tracks
+    # CODE/logic changes (e.g. a responder bug fix), not data changes.
+    # Baked directly into the cache key (Phase 6) so bumping it instantly
+    # orphans every previously-cached entry, L1 and L2 both. Manual for
+    # now (bump by hand on a behavior-affecting deploy) — deferred, more
+    # correct version is deriving this from the git commit SHA at
+    # build/startup so it self-invalidates every deploy automatically;
+    # not implemented yet (no CI/CD hook in this project).
+    CACHE_SCHEMA_VERSION: str = "1"
+    # Backstop, not the primary invalidation mechanism — corpus_version/
+    # CACHE_SCHEMA_VERSION/cascade-delete are. This just bounds the worst
+    # case if any of those ever miss an entry. Generous on purpose (24h
+    # default) so it never expires a legitimately-fresh entry mid-demo.
+    CACHE_TTL_SECONDS: int = 86400
 
     # PDF image description (Phase 3) — one vision call per extracted
     # figure via Gemini (free-tier, multimodal), gated so a broken key

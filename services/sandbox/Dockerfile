@@ -11,7 +11,8 @@ RUN useradd -m -u 1000 sandbox_user
 # 4. Install dependencies
 WORKDIR /app
 COPY runner.py .
-RUN pip install flask
+COPY limits.yaml .
+RUN pip install flask pyyaml
 
 # 5. Switch to non-root user
 USER sandbox_user
@@ -21,10 +22,15 @@ USER sandbox_user
 # except returning the HTTP response to the API.
 
 # 7. Healthcheck
-# Without this, Kubernetes might route traffic to the sandbox before Flask has finished starting up, 
+# Without this, Kubernetes might route traffic to the sandbox before Flask has finished starting up,
 # causing failed requests on cold starts.
+# Uses Python's stdlib, not curl — python:3.10-slim doesn't include curl,
+# which would have made this healthcheck always fail (found live while
+# fixing this Dockerfile's other missing dependencies). Adding curl just
+# to run curl would also work against this file's own "minimal base
+# image to reduce attack surface" goal above.
 HEALTHCHECK --interval=30s --timeout=5s \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
 # 8. Entrypoint
 EXPOSE 8080
