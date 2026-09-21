@@ -13,10 +13,10 @@
     --border: #E4E1D9;
     --text: #1C1B1A;
     --text-dim: #6F6B62;
-    --intake: #5B8DEF;    /* fetching / parsing */
+    --intake: #df6519;    /* fetching / parsing */
     --embed: #9B6BD9;     /* embedding */
     --index: #3BAE8C;     /* indexing / complete */
-    --fail: #E0703E;      /* failed */
+    --fail: #e0433e;      /* failed */
     --idle: #C9C4B8;      /* pending / neutral */
   }
 
@@ -244,11 +244,13 @@
     font-size: .68rem;
     text-transform: lowercase;
   }
-  .doc-status.pending, .doc-status.fetching, .doc-status.parsing { color: var(--intake); }
+  .doc-status.pending { color: var(--idle); }
+  .doc-status.fetching, .doc-status.parsing { color: var(--intake); }
   .doc-status.embedding { color: var(--embed); }
   .doc-status.indexing, .doc-status.complete { color: var(--index); }
   .doc-status.failed { color: var(--fail); }
-  .stage-dot.pending, .stage-dot.fetching, .stage-dot.parsing { background: var(--intake); }
+  .stage-dot.pending { color: var(--idle); }
+  .stage-dot.fetching, .stage-dot.parsing { background: var(--intake); }
   .stage-dot.embedding { background: var(--embed); }
   .stage-dot.indexing, .stage-dot.complete { background: var(--index); }
   .stage-dot.failed { background: var(--fail); }
@@ -269,7 +271,7 @@
 
 <header>
   <h1>OmniRAG</h1>
-  <p>Hybrid vector-graph retrieval over your own documents.</p>
+  <p> Agentic Hybrid Retrieval Over Your Documents.</p>
 </header>
 
 <main>

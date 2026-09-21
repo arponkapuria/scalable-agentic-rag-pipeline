@@ -36,6 +36,7 @@ class FailoverLLMClient(LLMClient):
         # attribute is the lower-blast-radius choice here.
         self.last_backend_used: str = ""
         self.last_model_used: str = ""
+        self.last_finish_reason: str = ""
 
     async def start(self):
         await self.primary.start()
@@ -50,6 +51,7 @@ class FailoverLLMClient(LLMClient):
             result = await self.primary.chat_completion(messages, temperature, json_mode, model, max_tokens)
             self.last_backend_used = self.primary.__class__.__name__
             self.last_model_used = getattr(self.primary, "last_model_used", "")
+            self.last_finish_reason = getattr(self.primary, "last_finish_reason", "")
             return result
         except ModelExhaustedError as e:
             logger.warning(f"Primary backend exhausted, failing over to backup: {e}")
@@ -60,6 +62,7 @@ class FailoverLLMClient(LLMClient):
             result = await self.backup.chat_completion(messages, temperature, json_mode, max_tokens=max_tokens)
             self.last_backend_used = self.backup.__class__.__name__
             self.last_model_used = getattr(self.backup, "last_model_used", "")
+            self.last_finish_reason = getattr(self.backup, "last_finish_reason", "")
             return result
 
 

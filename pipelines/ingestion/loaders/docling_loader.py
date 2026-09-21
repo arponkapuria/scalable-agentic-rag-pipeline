@@ -25,13 +25,12 @@ Jun 2026) duplicating rows on multi-page tables, exactly the shape of a
 references/bibliography table.
 
 Image captioning deliberately does NOT use Docling's built-in
-do_picture_description/PictureDescriptionApiOptions — that would call
-Gemini directly from inside Docling's own HTTP client, bypassing this
-app's shared BackendRateLimiter/CircuitBreaker on gemini_client that every
+do_picture_description/PictureDescriptionApiOptions — that would call the
+vision API directly from inside Docling's own HTTP client, bypassing this
+app's shared BackendRateLimiter/CircuitBreaker on mistral_client that every
 other LLM/vision call goes through. Instead: Docling only classifies +
 crops figures (do_picture_classification=True, do_picture_description=
-False), and captioning is a separate step through the existing
-gemini_client, exactly like the code it replaces.
+False), and captioning is a separate step through mistral_client.
 
 NOT live-verified end-to-end in this environment (no network for a
 multi-hundred-MB install here) — several exact import paths below
@@ -84,7 +83,7 @@ except ImportError:
     _ONNX_LAYOUT_AVAILABLE = False
 
 from services.api.app.config import settings
-from services.api.app.clients.llm.gemini_client import gemini_client
+from services.api.app.clients.llm.mistral_client import mistral_client
 from pipelines.ingestion.debug_dump import dump_debug_artifact
 
 logger = logging.getLogger(__name__)
@@ -217,12 +216,12 @@ def _top_picture_class(picture: PictureItem) -> Optional[str]:
 
 
 async def _describe_image(png_bytes: bytes, filename: str, index: int, corpus_id: Optional[str]) -> Optional[str]:
-    """Same shared, rate-limited gemini_client as the code this replaces
-    (opendataloader_pdf.py) — soft-fails per image, never fails the doc."""
+    """Shared, rate-limited mistral_client — soft-fails per image, never
+    fails the doc."""
     log_prefix = f"[ingest:{corpus_id}] " if corpus_id else ""
     try:
         b64_image = base64.b64encode(png_bytes).decode("utf-8")
-        content = await gemini_client.chat_completion(
+        content = await mistral_client.chat_completion(
             messages=[
                 {
                     "role": "user",
@@ -245,9 +244,11 @@ async def _describe_image(png_bytes: bytes, filename: str, index: int, corpus_id
 
 async def _caption_pictures(doc: Any, filename: str, corpus_id: Optional[str]) -> Dict[str, str]:
     """Returns {picture.self_ref: caption}. Skips pictures the classifier
-    scores into PICTURE_SKIP_CLASSES before spending a Gemini call —
-    direct answer to "don't burn API calls on logos." Sequential, not
-    concurrent, same reasoning as before: Gemini free tier is ~15 RPM."""
+    scores into PICTURE_SKIP_CLASSES before spending a caption call —
+    direct answer to "don't burn API calls on logos." Sequential AND paced
+    (CAPTION_MIN_INTERVAL_SECONDS between call starts): Mistral's free plan
+    caps at 0.5 requests/second, a per-second limit the per-minute rate
+    limiter can't see, so back-to-back calls would draw 429s."""
     log_prefix = f"[ingest:{corpus_id}] " if corpus_id else ""
     pictures = list(doc.pictures)
     if not pictures:
@@ -258,6 +259,7 @@ async def _caption_pictures(doc: Any, filename: str, corpus_id: Optional[str]) -
     captions: Dict[str, str] = {}
     skipped = 0
     failed = 0
+    last_call_started = 0.0
 
     for i, picture in enumerate(pictures, start=1):
         top_class = _top_picture_class(picture)
@@ -271,9 +273,13 @@ async def _caption_pictures(doc: Any, filename: str, corpus_id: Optional[str]) -
                 continue
             buf = io.BytesIO()
             image.save(buf, format="PNG")
+            wait = settings.CAPTION_MIN_INTERVAL_SECONDS - (time.monotonic() - last_call_started)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            last_call_started = time.monotonic()
             caption = await _describe_image(buf.getvalue(), filename, i, corpus_id)
             if caption:
-                logger.info(f"{log_prefix}Gemini captioned figure {i}/{len(pictures)}: {caption[:100]}")
+                logger.info(f"{log_prefix}Captioned figure {i}/{len(pictures)}: {caption[:100]}")
                 captions[picture.self_ref] = caption
             else:
                 failed += 1
@@ -282,7 +288,7 @@ async def _caption_pictures(doc: Any, filename: str, corpus_id: Optional[str]) -
             failed += 1
 
     logger.info(
-        f"{log_prefix}Gemini captioning for {filename}: {len(captions)}/{len(pictures)} succeeded, "
+        f"{log_prefix}Captioning for {filename}: {len(captions)}/{len(pictures)} succeeded, "
         f"{skipped} skipped by class, {failed} failed."
     )
     if corpus_id:

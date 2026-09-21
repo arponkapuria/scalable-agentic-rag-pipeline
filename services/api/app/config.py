@@ -156,12 +156,15 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 86400
 
     # PDF image description (Phase 3) — one vision call per extracted
-    # figure via Gemini (free-tier, multimodal), gated so a broken key
+    # figure via Mistral (free plan, multimodal), gated so a broken key
     # doesn't fail ingestion. Not part of the Groq/OpenRouter chat pool —
-    # separate budget, no backup configured (see gemini_client.py).
+    # separate budget, no backup configured (see mistral_client.py).
     PDF_DESCRIBE_IMAGES: bool = True
-    GEMINI_API_KEY: Optional[str] = None
-    GEMINI_VISION_MODEL: str = "gemini-3.5-flash-lite"
+    MISTRAL_API_KEY: Optional[str] = None
+    MISTRAL_VISION_MODEL: str = "ministral-14b-2512"
+    # Minimum gap between caption call STARTS — Mistral's free plan allows
+    # 0.5 requests/second, so 2.0s. Lower it only if your limits page shows more.
+    CAPTION_MIN_INTERVAL_SECONDS: float = 2.0
 
     # --- Docling parsing/chunking (in-process pipeline only — see
     # loaders/docling_loader.py) ---
@@ -182,7 +185,7 @@ class Settings(BaseSettings):
     # independent guess.
     CHUNK_MAX_TOKENS: int = 512
     # Comma-separated picture-classifier labels to skip captioning for
-    # (saves a Gemini call per skipped image). Empty by default — the
+    # (saves a caption call per skipped image). Empty by default — the
     # classifier's real label set isn't confirmed against a live run yet;
     # check logs/ingest_debug/{corpus_id}/docling_pictures.json after a
     # real ingestion and populate this once you've seen actual labels
@@ -205,6 +208,8 @@ class Settings(BaseSettings):
     # Combined query+context char count above which a query is routed to
     # the COMPLEX tier (plus a fixed keyword check — see model_router.py).
     MODEL_ROUTING_CHAR_THRESHOLD: int = 1500
+
+    ANSWER_MAX_TOKENS: int = 2048
 
     # --- Logging ---
     LOG_DIR: str = "logs"
@@ -242,7 +247,7 @@ class Settings(BaseSettings):
         above or an actual .env override."""
         return os.path.expanduser(v) if isinstance(v, str) else v
 
-    class Config:
+    class ConfigDict:
         env_file = ".env" if os.path.exists(".env") else None
         extra = "ignore"
 

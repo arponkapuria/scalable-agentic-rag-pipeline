@@ -37,7 +37,7 @@ from services.api.app.agents.graph import agent_app
 from services.api.app.agents.state import AgentState
 from services.api.app.enhancers.query_rewriter import rewrite_query
 from services.api.app.enhancers.hyde import generate_hypothetical_document
-from libs.utils.refusal import is_refusal as _is_refusal
+from libs.utils.refusal import is_refusal as _is_refusal, is_truncated as _is_truncated
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -313,7 +313,9 @@ async def chat_stream(
             # Gated on _is_refusal (see REFUSAL_PREFIXES's docstring in
             # libs/utils/refusal.py) and NO_CACHE_TOOLS (see its
             # module-level comment above).
-            if final_answer and not _is_refusal(final_answer) and final_tool_used not in NO_CACHE_TOOLS:
+            # A truncated answer is never cached either: it would keep being
+            # served cut-off after the cap is raised (until the TTL).
+            if final_answer and not _is_refusal(final_answer) and not _is_truncated(final_answer) and final_tool_used not in NO_CACHE_TOOLS:
                 await cache.set_exact(
                     corpus_id, req.message, final_answer, final_sources,
                     final_tool_used, final_backend_used, final_model_used,
@@ -321,7 +323,7 @@ async def chat_stream(
             elif final_answer and final_tool_used in NO_CACHE_TOOLS:
                 logger.info(f"tool_used={final_tool_used} — not caching")
             elif final_answer:
-                logger.info("Refusal answer — not caching")
+                logger.info("Refusal or truncated answer — not caching")
 
         except Exception as e:
             logger.error(f"Error in chat stream: {e}", exc_info=True)

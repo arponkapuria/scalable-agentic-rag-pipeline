@@ -48,7 +48,7 @@ class OpenAICompatibleClient(LLMClient):
     - `chat_completion(..., model=X)`: caller pins one specific model,
       tried FIRST, before the rest of this backend's own priority list —
       used by heuristic model-tier routing and any single-model client
-      like Gemini captioning. Falls through to the remaining models on
+      like Mistral captioning. Falls through to the remaining models on
       failure rather than raising immediately (a pin expresses "prefer
       this one," not "only ever try this one").
 
@@ -94,6 +94,10 @@ class OpenAICompatibleClient(LLMClient):
         # answered" mystery that only server logs could (sometimes)
         # answer, and only for paths that explicitly logged it.
         self.last_model_used: str = ""
+        # Why the last successful call stopped: "stop" (finished) or "length"
+        # (hit max_tokens — the answer is cut off). Same attribute pattern as
+        # last_model_used; read by responder.py to flag truncated answers.
+        self.last_finish_reason: str = ""
 
     async def start(self):
         if not self.models:
@@ -185,7 +189,8 @@ class OpenAICompatibleClient(LLMClient):
             try:
                 response = await self._post_with_retry(payload)
                 self._record_headers(tracker, response.headers)
-                content = response.json()["choices"][0]["message"]["content"]
+                choice = response.json()["choices"][0]
+                content = choice["message"]["content"]
 
                 # Bug 1 fix: an HTTP 200 with empty/blank content (observed
                 # from groq/compound under load) was previously treated as
@@ -201,6 +206,12 @@ class OpenAICompatibleClient(LLMClient):
 
                 self._circuit.record_success()
                 self.last_model_used = model
+                self.last_finish_reason = choice.get("finish_reason") or ""
+                if self.last_finish_reason == "length":
+                    logger.warning(
+                        f"{self.__class__.__name__}: '{model}' hit max_tokens={max_tokens} — "
+                        f"answer truncated ({len(content)} chars). Raise the caller's cap if this recurs."
+                    )
                 return content
             except (httpx.HTTPStatusError, httpx.TransportError) as e:
                 last_error = e
@@ -234,7 +245,7 @@ class OpenAICompatibleClient(LLMClient):
         if response.status_code >= 400:
             # raise_for_status()'s default message is just the status
             # line ("400 Bad Request for url ...") — it drops the actual
-            # error body, which is where Groq/OpenRouter/Gemini explain
+            # error body, which is where Groq/OpenRouter/Mistral explain
             # WHY (e.g. "max_tokens exceeds model limit", "response_format
             # not supported for this model"). Without this, every 400 was
             # a guessing game instead of an actual diagnosis.

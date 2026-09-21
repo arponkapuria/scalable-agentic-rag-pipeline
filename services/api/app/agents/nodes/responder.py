@@ -4,7 +4,7 @@ from services.api.app.agents.state import AgentState
 from services.api.app.clients.llm.factory import llm_client
 from services.api.app.config import settings
 from libs.utils.model_router import route_model
-from libs.utils.refusal import is_refusal
+from libs.utils.refusal import TRUNCATION_NOTE, is_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,16 @@ def _existence_check_negative() -> str:
     return "No — that isn't mentioned in the documents."
 
 
+def _flag_truncation(answer: str) -> str:
+    """The client's default cap (1024) silently cut detailed answers mid-sentence
+    (finish_reason == "length", confirmed live). The cap is now ANSWER_MAX_TOKENS,
+    and if an answer still hits it the user is told instead of shown a cut-off
+    text as if it were complete."""
+    if getattr(llm_client, "last_finish_reason", "") == "length":
+        return answer + TRUNCATION_NOTE
+    return answer
+
+
 async def _answer_from_documents(query: str, documents: list[str], is_existence_check: bool) -> dict:
     # Deterministic short-circuit for "retrieval genuinely found nothing" —
     # added after a real, observed failure: the LLM was called with zero
@@ -165,6 +175,7 @@ async def _answer_from_documents(query: str, documents: list[str], is_existence_
         ],
         temperature=0.3,
         model=routed_model,
+        max_tokens=settings.ANSWER_MAX_TOKENS,
     )
     model_used = getattr(llm_client, "last_model_used", "") or routed_model or ""
 
@@ -191,7 +202,7 @@ async def _answer_from_documents(query: str, documents: list[str], is_existence_
 
     backend_used = getattr(llm_client, "last_backend_used", "") or llm_client.__class__.__name__
     return {
-        "messages": [{"role": "assistant", "content": answer}],
+        "messages": [{"role": "assistant", "content": _flag_truncation(answer)}],
         "backend_used": backend_used,
         "model_used": model_used,
     }
@@ -232,12 +243,13 @@ async def _answer_conversationally(state: AgentState, query: str) -> dict:
         ],
         temperature=0.5,
         model=routed_model,
+        max_tokens=settings.ANSWER_MAX_TOKENS,
     )
 
     backend_used = getattr(llm_client, "last_backend_used", "") or llm_client.__class__.__name__
     model_used = getattr(llm_client, "last_model_used", "") or routed_model or ""
     return {
-        "messages": [{"role": "assistant", "content": answer}],
+        "messages": [{"role": "assistant", "content": _flag_truncation(answer)}],
         "backend_used": backend_used,
         "model_used": model_used,
     }
