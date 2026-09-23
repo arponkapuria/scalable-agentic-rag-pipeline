@@ -8,9 +8,18 @@ import (routes/chat.py -> agents/graph.py -> agents/nodes/responder.py,
 so responder.py importing anything from routes/chat.py would cycle back).
 """
 
+# Guardrail-blocked messages (libs/guardrails) live here, not in that module,
+# for the same circular-import reason as everything else in this file: the
+# input-guard path in routes/chat.py and the output-guard path in
+# agents/nodes/responder.py both need one shared constant, and this module
+# already sits below both without cycling back to either.
+GUARDRAIL_INPUT_BLOCKED = "I can't help with that request."
+GUARDRAIL_OUTPUT_BLOCKED = "I can't share that response."
+
 REFUSAL_PREFIXES = (
     "I don't have information about",
     "I don't have that information in my documents.",
+    GUARDRAIL_OUTPUT_BLOCKED,  # never cache a guardrail-blocked answer
 )
 
 

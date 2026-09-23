@@ -37,7 +37,8 @@ from services.api.app.agents.graph import agent_app
 from services.api.app.agents.state import AgentState
 from services.api.app.enhancers.query_rewriter import rewrite_query
 from services.api.app.enhancers.hyde import generate_hypothetical_document
-from libs.utils.refusal import is_refusal as _is_refusal, is_truncated as _is_truncated
+from libs.utils.refusal import GUARDRAIL_INPUT_BLOCKED, is_refusal as _is_refusal, is_truncated as _is_truncated
+from libs.guardrails.filters import check_input
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -149,6 +150,24 @@ async def chat_stream(
     Orchestrates the RAG flow: Cache -> Enhance -> History -> Agent -> Stream -> Cache-write.
     """
     logger.info(f"Chat request for corpus {corpus_id}")
+
+    # 0. Input guardrail — before any cache lookup or LLM call, so a
+    # blocked request costs nothing beyond one regex pass. Same
+    # persist-then-yield shape as the cache-hit paths below, for
+    # consistency with the rest of this handler.
+    blocked_reason = check_input(req.message)
+    if blocked_reason:
+        logger.info(f"Input guardrail blocked request ({blocked_reason})")
+
+        async def stream_blocked():
+            await memory.add_message(corpus_id, "user", req.message)
+            assistant_id = await memory.add_message(corpus_id, "assistant", GUARDRAIL_INPUT_BLOCKED)
+            yield ChatResponse(
+                content=GUARDRAIL_INPUT_BLOCKED, corpus_id=corpus_id, message_id=assistant_id,
+                cache_hit="none", tool_used="", backend_used="none", model_used="", sources=[],
+            ).model_dump_json() + "\n"
+
+        return StreamingResponse(stream_blocked(), media_type="application/x-ndjson")
 
     # 1. L1 exact-match (current corpus_version only)
     exact_hit = await cache.get_exact(corpus_id, req.message)

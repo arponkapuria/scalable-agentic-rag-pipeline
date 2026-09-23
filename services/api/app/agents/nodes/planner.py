@@ -1,6 +1,7 @@
 import json
 import logging
 from services.api.app.agents.state import AgentState
+from libs.guardrails.plan_schema import validate_plan
 from services.api.app.clients.llm.factory import llm_client
 from libs.utils.model_router import route_model
 
@@ -127,10 +128,13 @@ async def planner_node(state: AgentState) -> dict:
             model=route_model(user_query),
         )
         
-        # Parse JSON
-        plan = json.loads(response_text)
-        
-        logger.info(f"Plan derived: {plan['action']}")
+        # Parse JSON, then validate against the values downstream code
+        # actually expects (libs/guardrails/plan_schema.py) — a safety net
+        # on top of the existing null-handling fallback below, not a
+        # replacement for it.
+        plan = validate_plan(json.loads(response_text))
+
+        logger.info(f"Plan derived: {plan.get('action')}")
         
         # Update State
         # `plan.get(key, default)` only falls back when the KEY is

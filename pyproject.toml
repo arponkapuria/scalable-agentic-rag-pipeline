@@ -45,9 +45,3 @@ ingestion = [
     # it explicitly alongside docling.
     "transformers>=4.40.0",
 ]
-observability = [
-    "opentelemetry-api>=1.40.0",
-    "opentelemetry-exporter-otlp>=1.40.0",
-    "opentelemetry-instrumentation-fastapi>=0.61b0",
-    "opentelemetry-sdk>=1.40.0",
-]

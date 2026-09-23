@@ -5,6 +5,7 @@ from services.api.app.clients.llm.factory import llm_client
 from services.api.app.config import settings
 from libs.utils.model_router import route_model
 from libs.utils.refusal import TRUNCATION_NOTE, is_refusal
+from libs.guardrails.filters import guard_output
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ async def generate_node(state: AgentState) -> dict:
     action = state.get("action") or "retrieve"
 
     if action == "retrieve":
-        return await _answer_from_documents(query, documents, bool(state.get("is_existence_check")))
+        result = await _answer_from_documents(query, documents, bool(state.get("is_existence_check")))
     elif action == "tool_use" and state.get("tool_choice") == "sandbox":
         # Deterministic echo, no LLM call (Phase 6 follow-up) — replaces
         # asking the LLM to narrate the sandbox's stdout. Two real
@@ -42,7 +43,7 @@ async def generate_node(state: AgentState) -> dict:
         # already sitting in state — narrating it is pure downside here,
         # unlike web_search, where synthesizing results is genuinely
         # useful. See generate_node's docstring below for tool_result.
-        return {
+        result = {
             "messages": [{"role": "assistant", "content": _echo_sandbox_result(state.get("tool_result") or "")}],
             "backend_used": "none",
             "model_used": "",
@@ -52,7 +53,12 @@ async def generate_node(state: AgentState) -> dict:
         # tool (e.g. web_search) go through a plain conversational prompt
         # — no "cite sources"/"refuse if no context" instructions, since
         # neither concept applies here.
-        return await _answer_conversationally(state, query)
+        result = await _answer_conversationally(state, query)
+
+    # Output guardrail — applied here, once, regardless of which branch
+    # produced the answer, instead of duplicating the check inside each
+    # of the three branches above.
+    return guard_output(result)
 
 
 def _echo_sandbox_result(tool_result: str) -> str:
