@@ -82,6 +82,50 @@ class VectorDBClient:
         )
         return response.points
 
+    async def search_dense(
+        self,
+        dense_vector: list[float],
+        corpus_id: str,
+        limit: int = 10,
+    ):
+        """Dense-only search — no sparse branch, no RRF fusion. Not used
+        by production retrieval (search_hybrid is); exists for the eval 
+        harness's retrieval ablation (dense-only vs BM25-only vs hybrid 
+        vs hybrid+rerank), which needs each component's own ranking to 
+        isolate its contribution, not just the already-fused result."""
+        await self.init_collections()
+        response = await self.client.query_points(
+            collection_name=settings.QDRANT_COLLECTION,
+            query=dense_vector,
+            using="dense",
+            query_filter=models.Filter(
+                must=[models.FieldCondition(key="corpus_id", match=models.MatchValue(value=corpus_id))]
+            ),
+            limit=limit,
+            with_payload=True,
+        )
+        return response.points
+
+    async def search_sparse(
+        self,
+        sparse_vector: dict,
+        corpus_id: str,
+        limit: int = 10,
+    ):
+        """BM25-only search — same ablation use case as search_dense above."""
+        await self.init_collections()
+        response = await self.client.query_points(
+            collection_name=settings.QDRANT_COLLECTION,
+            query=models.SparseVector(indices=sparse_vector["indices"], values=sparse_vector["values"]),
+            using="sparse",
+            query_filter=models.Filter(
+                must=[models.FieldCondition(key="corpus_id", match=models.MatchValue(value=corpus_id))]
+            ),
+            limit=limit,
+            with_payload=True,
+        )
+        return response.points
+
     # search method for semantic cache searches
     async def search_collection(
         self,

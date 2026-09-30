@@ -1,6 +1,6 @@
 import os
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, NoDecode
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from typing import Annotated, List, Optional
 
 class Settings(BaseSettings):
@@ -8,6 +8,12 @@ class Settings(BaseSettings):
     Application Configuration.
     Reads environment variables automatically (case-insensitive).
     """
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     # General
     ENV: str = "prod"
     LOG_LEVEL: str = "INFO"
@@ -225,6 +231,21 @@ class Settings(BaseSettings):
     INGEST_DEBUG_DUMP: bool = True
     INGEST_DEBUG_DIR: str = "logs/ingest_debug"
 
+    # --- Judge model (Phase 9a evaluation ONLY — see eval/clients/gemma_client.py) ---
+    # Google's OpenAI-compatible endpoint. Deliberately a different vendor
+    # from both the generator (Groq) and the captioner (Mistral) — a judge
+    # sharing a vendor with either risks correlated scoring bias (see
+    # EVALUATION_DESIGN.md / mistral_client.py's docstring for the same
+    # reasoning applied to captioning).
+    GOOGLE_API_KEY: Optional[str] = None
+    GEMMA_JUDGE_MODEL: str = "gemma-4-31b-it"
+    GEMMA_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+    # Alternative judge backend — https://docs.cohere.com/docs/compatibility-api
+    COHERE_API_KEY: Optional[str] = None
+    COHERE_JUDGE_MODEL: str = "command-r7b-12-2024"
+    COHERE_BASE_URL: str = "https://api.cohere.ai/compatibility/v1"
+
     @field_validator(
         "GROQ_MODELS", "OPENROUTER_MODELS", "OLLAMA_MODELS",
         "VLLM_METAL_MODELS", "VLLM_MODAL_MODELS",
@@ -246,10 +267,6 @@ class Settings(BaseSettings):
         real path regardless of whether this came from the Python default
         above or an actual .env override."""
         return os.path.expanduser(v) if isinstance(v, str) else v
-
-    class ConfigDict:
-        env_file = ".env" if os.path.exists(".env") else None
-        extra = "ignore"
 
 # Instantiate singleton
 settings = Settings()

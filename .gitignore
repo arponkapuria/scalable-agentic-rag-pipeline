@@ -197,6 +197,11 @@ logs
 PROGRESS.md
 PROJECT_INSTRUCTIONS.md
 system-design.md
+EVALUATION_DESIGN.md
+RUNBOOK.md
+eval/results/generation
+eval/results/retrieval
+eval/results/judge
 
 
 # tests

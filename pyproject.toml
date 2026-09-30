@@ -45,3 +45,24 @@ ingestion = [
     # it explicitly alongside docling.
     "transformers>=4.40.0",
 ]
+eval = [
+    # RAGAS's real metric implementations (Faithfulness, AnswerRelevancy,
+    # ContextPrecisionWithoutReference, ContextRecall, AnswerCorrectness)
+    # for Phase 9a (eval/). Scoped to its own group, deliberately never
+    # pulled into the `api` group's install: `pip install ragas` drags in
+    # ~30 packages (langchain, langchain-community, langchain-text-splitters,
+    # langgraph-prebuilt/-sdk, langchain_openai, openai SDK, datasets,
+    # pyarrow, huggingface-hub, instructor, tiktoken...) — several of
+    # these are the exact packages (langchain, langchain-community,
+    # langchain-text-splitters) removed from this list during the
+    # Neo4j/Ray cleanup. None of it touches the deployed api service;
+    # `uv sync --group eval` (or `pip install "ragas>=0.4.3,<0.5"`) only
+    # when actually running the eval.
+    # Verified live: ragas 0.4.3's own ragas/llms/base.py unconditionally
+    # imports langchain_community.chat_models.vertexai.ChatVertexAI, a
+    # submodule current langchain-community releases no longer ship
+    # (deprecated/moved) — `import ragas` fails on a clean install as of
+    # this writing. eval/_ragas_compat.py works around it (we never use
+    # VertexAI); see that file's docstring and eval/RUNBOOK.md.
+    "ragas>=0.4.3,<0.5",
+]

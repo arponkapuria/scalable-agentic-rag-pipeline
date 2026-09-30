@@ -1,0 +1,230 @@
+{
+  "_note": "Drafted from general knowledge of these 5 papers, NOT from the actual indexed chunks. Every gold_span MUST be verified against the real PDFs (and confirmed indexed via `python -m eval.cli verify-gold`) before Run 2 — this is the Human-in-the-loop checkpoint required before any run. gold_span is null for unanswerable questions by design.",
+  "questions": [
+    {
+      "id": "q01",
+      "category": "single_fact",
+      "paper": "transformer",
+      "question": "How many attention heads does the base Transformer model use in its multi-head attention layers?",
+      "reference_answer": "8 attention heads.",
+      "gold_span": "8 parallel attention layers, or heads",
+      "answerable": true
+    },
+    {
+      "id": "q02",
+      "category": "single_fact",
+      "paper": "transformer",
+      "question": "What optimizer did the authors use to train the Transformer models?",
+      "reference_answer": "The Adam optimizer.",
+      "gold_span": "We used the Adam optimizer",
+      "answerable": true
+    },
+    {
+      "id": "q03",
+      "category": "single_fact",
+      "paper": "resnet",
+      "question": "What top-5 error rate did the ensemble of residual nets achieve on the ImageNet test set, winning 1st place in the ILSVRC 2015 classification task?",
+      "reference_answer": "3.57% top-5 error.",
+      "gold_span": "3.57% top-5 error",
+      "answerable": true
+    },
+    {
+      "id": "q04",
+      "category": "single_fact",
+      "paper": "resnet",
+      "question": "How many layers does the ResNet-152 model have?",
+      "reference_answer": "152 layers.",
+      "gold_span": "152 layers",
+      "answerable": true
+    },
+    {
+      "id": "q05",
+      "category": "single_fact",
+      "paper": "bert",
+      "question": "What vocabulary size does BERT use for its WordPiece embeddings?",
+      "reference_answer": "30,000 tokens.",
+      "gold_span": "30,000 token vocabulary",
+      "answerable": true
+    },
+    {
+      "id": "q06",
+      "category": "single_fact",
+      "paper": "bert",
+      "question": "How many parameters does BERT-large have?",
+      "reference_answer": "340 million parameters.",
+      "gold_span": "340M parameters",
+      "answerable": true
+    },
+    {
+      "id": "q07",
+      "category": "single_fact",
+      "paper": "lora",
+      "question": "By roughly what factor does LoRA reduce the number of trainable parameters when adapting GPT-3 175B, compared to full fine-tuning?",
+      "reference_answer": "By roughly 10,000x.",
+      "gold_span": "10,000 times",
+      "answerable": true
+    },
+    {
+      "id": "q08",
+      "category": "multi_passage",
+      "paper": "transformer",
+      "question": "What are the two sub-layers inside each Transformer encoder layer, and what does each one do?",
+      "reference_answer": "A multi-head self-attention mechanism, and a position-wise fully connected feed-forward network applied to each position separately and identically.",
+      "gold_span": "multi-head self-attention mechanism",
+      "answerable": true
+    },
+    {
+      "id": "q09",
+      "category": "multi_passage",
+      "paper": "resnet",
+      "question": "What problem does the residual learning framework address, and how do shortcut connections solve it?",
+      "reference_answer": "It addresses the degradation problem, where accuracy gets saturated and then degrades rapidly as network depth increases (not caused by overfitting). Shortcut/identity connections let layers fit a residual mapping F(x) = H(x) - x instead of the original unreferenced mapping H(x) directly, which is easier to optimize.",
+      "gold_span": "degradation problem",
+      "answerable": true
+    },
+    {
+      "id": "q10",
+      "category": "multi_passage",
+      "paper": "bert",
+      "question": "What are BERT's two pre-training tasks, and what does each one train the model to predict?",
+      "reference_answer": "Masked Language Model (predicting randomly masked-out tokens from context) and Next Sentence Prediction (predicting whether sentence B actually follows sentence A in the original text).",
+      "gold_span": "next sentence prediction",
+      "answerable": true
+    },
+    {
+      "id": "q11",
+      "category": "multi_passage",
+      "paper": "lora",
+      "question": "How does LoRA modify a pretrained weight matrix during fine-tuning, and which weight matrices is it typically applied to?",
+      "reference_answer": "It freezes the pretrained weight matrix W0 and adds a trainable low-rank decomposition BA on top of it; typically applied to the Transformer's attention weight matrices, most commonly Wq and Wv.",
+      "gold_span": "low-rank decomposition",
+      "answerable": true
+    },
+    {
+      "id": "q12",
+      "category": "multi_passage",
+      "paper": "rag",
+      "question": "What are the two RAG model variants proposed in the paper, and how do they differ in how they use retrieved documents?",
+      "reference_answer": "RAG-Sequence uses the same retrieved document to generate the entire output sequence, while RAG-Token can draw on a different retrieved document for each individual generated token.",
+      "gold_span": "RAG-Sequence",
+      "answerable": true
+    },
+    {
+      "id": "q13",
+      "category": "table_lookup",
+      "paper": "transformer",
+      "question": "According to the model variations/results table, what BLEU score does the base Transformer model achieve on the WMT 2014 English-to-German translation task?",
+      "reference_answer": "27.3 BLEU.",
+      "gold_span": "27.3",
+      "answerable": true
+    },
+    {
+      "id": "q14",
+      "category": "table_lookup",
+      "paper": "resnet",
+      "question": "According to the ImageNet validation error table, is the top-1 error of the 34-layer plain network higher or lower than the 34-layer residual network (ResNet-34)?",
+      "reference_answer": "Higher — the 34-layer plain network has a higher top-1 error than ResNet-34, illustrating the degradation problem the residual connections fix.",
+      "gold_span": "34-layer",
+      "answerable": true
+    },
+    {
+      "id": "q15",
+      "category": "table_lookup",
+      "paper": "bert",
+      "question": "According to the GLUE benchmark results table, which BERT variant achieves the higher average GLUE score, BERT-base or BERT-large?",
+      "reference_answer": "BERT-large.",
+      "gold_span": "BERT LARGE",
+      "answerable": true
+    },
+    {
+      "id": "q16",
+      "category": "table_lookup",
+      "paper": "lora",
+      "question": "According to LoRA's parameter-count comparison for RoBERTa-large, roughly how many trainable parameters does LoRA use compared to full fine-tuning?",
+      "reference_answer": "LoRA uses on the order of 0.8M trainable parameters, versus roughly 355M for full fine-tuning.",
+      "gold_span": "0.8M",
+      "answerable": true
+    },
+    {
+      "id": "q17",
+      "category": "figure_caption",
+      "paper": "transformer",
+      "question": "What does Figure 1 in the Transformer paper show?",
+      "reference_answer": "The overall Transformer model architecture — the encoder and decoder stacks.",
+      "gold_span": "The Transformer - model architecture",
+      "answerable": true
+    },
+    {
+      "id": "q18",
+      "category": "figure_caption",
+      "paper": "resnet",
+      "question": "What does the training-curve figure comparing plain networks and residual networks illustrate?",
+      "reference_answer": "That the deeper 34-layer plain network has higher training error than the shallower 18-layer plain network (the degradation problem), while the residual network does not show this pattern — the deeper ResNet trains better than the shallower one.",
+      "gold_span": "training error curve",
+      "answerable": true
+    },
+    {
+      "id": "q19",
+      "category": "cross_paper",
+      "paper": "bert",
+      "question": "Is BERT's encoder architecture based on the Transformer architecture from the original Transformer paper?",
+      "reference_answer": "Yes — BERT's encoder is a multi-layer bidirectional Transformer encoder, built directly on the architecture described in the original Transformer paper.",
+      "gold_span": "Transformer encoder",
+      "answerable": true
+    },
+    {
+      "id": "q20",
+      "category": "cross_paper",
+      "paper": "rag",
+      "question": "Which of these papers introduces a retrieval mechanism over an external non-parametric memory?",
+      "reference_answer": "The RAG paper (Lewis et al.) — it combines a parametric generator with a non-parametric dense vector index of documents, accessed through a pre-trained neural retriever.",
+      "gold_span": "The RAG paper",
+      "answerable": true
+    },
+    {
+      "id": "q21",
+      "category": "cross_paper",
+      "paper": "resnet",
+      "question": "Do both the ResNet paper and the Transformer paper use some form of residual or skip connections in their architecture?",
+      "reference_answer": "Yes — ResNet is built entirely around residual/shortcut connections, and the Transformer also adds a residual connection around each of its sub-layers.",
+      "gold_span": "yes - both resnet and transformer paper use residual or skip connections",
+      "answerable": true
+    },
+    {
+      "id": "q22",
+      "category": "unanswerable",
+      "paper": null,
+      "question": "What optimizer learning rate schedule does the ResNet paper use for training GPT-3?",
+      "reference_answer": "This is not covered by the documents — the ResNet paper does not discuss GPT-3 at all.",
+      "gold_span": null,
+      "answerable": false
+    },
+    {
+      "id": "q23",
+      "category": "unanswerable",
+      "paper": null,
+      "question": "Does the Transformer paper report the carbon footprint or CO2 emissions of training the model?",
+      "reference_answer": "No — the Transformer paper does not report carbon footprint or CO2 emissions.",
+      "gold_span": null,
+      "answerable": false
+    },
+    {
+      "id": "q24",
+      "category": "unanswerable",
+      "paper": null,
+      "question": "What dataset was used to train Stable Diffusion?",
+      "reference_answer": "This is not covered by the documents — none of the five papers in this corpus discuss Stable Diffusion.",
+      "gold_span": null,
+      "answerable": false
+    },
+    {
+      "id": "q25",
+      "category": "unanswerable",
+      "paper": null,
+      "question": "Does the LoRA paper report results on the ImageNet dataset?",
+      "reference_answer": "No. The LoRA paper's reported experiments are on language-model adaptation tasks and NLP benchmarks (GLUE and others); it does not report an ImageNet experiment.",
+      "gold_span": null,
+      "answerable": false
+    }
+  ]
+}

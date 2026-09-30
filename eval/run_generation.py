@@ -1,0 +1,142 @@
+"""
+Run 3 — shipped-pipeline answer per question, via the REAL agent graph
+(agents/graph.py's compiled agent_app) — the same planner -> retriever/
+tool -> responder path production chat traffic takes, invoked directly
+instead of through chat.py's cache/session/streaming wrapper (eval wants
+a fresh generation every time, not a cache hit, and there's no real
+browser session to key a cookie off of).
+
+Run 4 (--closed-book) — same question, no retrieval, a plain "answer from
+your own knowledge" prompt straight to llm_client. Isolates what the
+corpus/retrieval actually contributes, per EVALUATION_DESIGN.md's
+Baseline row. Deliberately NOT reusing responder.py's
+_answer_conversationally — that path exists for chitchat/tool-narration,
+not for a from-model-knowledge factual answer, and its prompt doesn't ask
+the model to actually attempt one.
+
+Both are gated on backend exhaustion: if llm_client raises
+ModelExhaustedError (Groq's whole day used up), the run stops cleanly —
+whatever's already saved stays saved, and re-running this command after
+the daily reset just continues from the first unanswered question.
+"""
+import argparse
+import asyncio
+import logging
+import time
+
+from services.api.app.agents.graph import agent_app
+from services.api.app.agents.state import AgentState
+from services.api.app.clients.llm.factory import llm_client
+from services.api.app.clients.llm.openai_compatible import ModelExhaustedError
+
+from eval import config as eval_config
+from eval import storage
+
+logger = logging.getLogger(__name__)
+
+CLOSED_BOOK_SYSTEM_PROMPT = (
+    "Answer the question using only your own knowledge. Do not claim access "
+    "to any external documents or corpus. If you genuinely don't know, say "
+    "so plainly rather than guessing. Be concise."
+)
+
+
+async def _generate_shipped(question: dict) -> None:
+    qid = question["id"]
+    if storage.has_keys("generation", eval_config.RESULTS_DIR, qid, ["shipped"]):
+        logger.info(f"[generate:{qid}] shipped answer already present — skipping")
+        return
+
+    # Mirrors chat.py's initial_state exactly (messages=[] — single-turn,
+    # no prior history, matching each eval question being independent)
+    # so this is genuinely the production graph, not a reimplementation.
+    state = AgentState(
+        messages=[],
+        current_query=question["question"],
+        documents=[],
+        plan=[],
+        action="",
+        corpus_id=eval_config.EVAL_CORPUS_ID,
+        tool_used="",
+        backend_used="",
+        model_used="",
+        sources=[],
+        is_existence_check=False,
+    )
+    start = time.monotonic()
+    result = await agent_app.ainvoke(state)
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    messages = result.get("messages") or []
+    answer = messages[-1].get("content", "") if messages else ""
+
+    entry = {
+        "answer": answer,
+        "documents": result.get("documents", []),
+        "sources": result.get("sources", []),
+        "tool_used": result.get("tool_used", ""),
+        "backend_used": result.get("backend_used", ""),
+        "model_used": result.get("model_used", ""),
+        "is_existence_check": bool(result.get("is_existence_check")),
+        "latency_ms": latency_ms,
+    }
+    storage.update("generation", eval_config.RESULTS_DIR, qid, {"shipped": entry})
+    logger.info(f"[generate:{qid}] shipped done in {latency_ms}ms tool={entry['tool_used']!r}")
+
+
+async def _generate_closed_book(question: dict) -> None:
+    qid = question["id"]
+    if storage.has_keys("generation", eval_config.RESULTS_DIR, qid, ["closed_book"]):
+        logger.info(f"[generate:{qid}] closed-book answer already present — skipping")
+        return
+
+    start = time.monotonic()
+    answer = await llm_client.chat_completion(
+        messages=[
+            {"role": "system", "content": CLOSED_BOOK_SYSTEM_PROMPT},
+            {"role": "user", "content": question["question"]},
+        ],
+        temperature=0.3,
+        max_tokens=1024,
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    entry = {
+        "answer": answer,
+        "backend_used": getattr(llm_client, "last_backend_used", "") or llm_client.__class__.__name__,
+        "model_used": getattr(llm_client, "last_model_used", ""),
+        "latency_ms": latency_ms,
+    }
+    storage.update("generation", eval_config.RESULTS_DIR, qid, {"closed_book": entry})
+    logger.info(f"[generate:{qid}] closed-book done in {latency_ms}ms")
+
+
+async def run(closed_book: bool) -> None:
+    data = storage.load(eval_config.DATASET_PATH)
+    questions = data["questions"]
+    await llm_client.start()
+    try:
+        for q in questions:
+            try:
+                if closed_book:
+                    await _generate_closed_book(q)
+                else:
+                    await _generate_shipped(q)
+            except ModelExhaustedError as e:
+                logger.warning(f"[generate] backend exhausted at {q['id']} — stopping for now: {e}")
+                logger.warning("[generate] re-run this exact command later (e.g. after Groq's "
+                                "daily reset) to continue from the next unanswered question.")
+                break
+    finally:
+        await llm_client.close()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--closed-book", action="store_true")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run(args.closed_book))
+
+
+if __name__ == "__main__":
+    main()

@@ -147,10 +147,17 @@ async def planner_node(state: AgentState) -> dict:
         # route_model() downstream with 'NoneType' has no attribute
         # 'lower' — found live. `or` correctly falls back on both
         # missing-key AND explicit-null cases.
+        action = plan.get("action") or "retrieve"
+        # Only tool turns adopt the planner's rephrase (a bare "yes" to a
+        # web-search offer needs it to become the topic). On retrieve/
+        # direct_answer, keep the coreference-resolved user_query: the
+        # Phase 9a ablation showed the planner's refined_query lowered
+        # Hit@5/MRR vs the raw query (0.619 vs 0.667 / 0.508 vs 0.563)
+        # and caused a false refusal on a clearly-answerable question.
         return {
-            "current_query": plan.get("refined_query") or user_query,
+            "current_query": (plan.get("refined_query") or user_query) if action == "tool_use" else user_query,
             "plan": [plan["reasoning"]],
-            "action": plan.get("action") or "retrieve",
+            "action": action,
             "tool_choice": plan.get("tool_choice") or "",
             "tool_input": plan.get("tool_input") or "",
             "is_existence_check": bool(plan.get("is_existence_check")),
