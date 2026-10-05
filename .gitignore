@@ -171,12 +171,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# artifacts / data
-data/
-pipelines/jobs/requirements-ray.txt
-cookies.txt
-
-
 # aws / terraform related files
 aws_outputs.txt
 infra/aws-nuke/config.yaml
@@ -191,19 +185,12 @@ override.tf.json
 *_override.tf.json
 logs
 
-
-
-# personal / docs
-PROGRESS.md
-PROJECT_INSTRUCTIONS.md
-system-design.md
-EVALUATION_DESIGN.md
-RUNBOOK.md
+# evaluation artifacts
+data/
 eval/results/generation
 eval/results/retrieval
 eval/results/judge
 
-
-# tests
-testing.md
-test-docs/
+# personal scratchpad - DELETE LATER 
+personal
+test-docs
