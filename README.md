@@ -1,3 +1,5 @@
+> A Work in Progress branch !
+
 ## Overview
 
 - Multi-node Amazon EKS deployment
@@ -20,7 +22,7 @@
 
 | Branch | Description |
 |---------|-------------|
-| `main` | Cost-optimized deployment |
+| `dev/cost-optimized` | Cost-optimized deployment |
 | `dev/aws-full-scale` | High-availability, enterprise-scale deployment |
 
 > For the recommended deployment path, refer to the `main` branch.
