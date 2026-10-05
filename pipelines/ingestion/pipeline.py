@@ -1,15 +1,5 @@
 """
-In-process ingestion driver — the only ingestion path now (Ray/Neo4j
-removed entirely; project scope narrowed to ingestion + hybrid retrieval
-+ reranking, no graph DB, no separate ingestion cluster).
-
-Stages: fetch -> parse/chunk (Docling) -> embed (dense+sparse) ->
-index into Qdrant -> bump corpus_version. Runs as a FastAPI BackgroundTask
-triggered from the MinIO webhook route.
-
-CPU-bound/blocking calls (Docling's layout/table-structure inference,
-FastEmbed sparse encoding) are wrapped in asyncio.to_thread so they don't
-block the event loop chat requests share with ingestion.
+In-process ingestion driver. Stages: fetch -> parse/chunk (Docling) -> embed (dense+sparse) -> index into Qdrant -> bump corpus_version. Runs as a FastAPI BackgroundTask triggered from the MinIO webhook route. CPU-bound/blocking calls (Docling inference, sparse encoding) run via asyncio.to_thread so they don't block the event loop chat requests share with ingestion.
 """
 import asyncio
 import logging
@@ -20,7 +10,7 @@ from services.api.app.config import settings
 from services.api.app.memory.postgres import document_store
 from libs.utils.s3_client import get_s3_client
 
-from models.embeddings.fastembed_client import fastembed_client
+from services.api.app.clients.fastembed_client import fastembed_client
 from pipelines.ingestion.chunking.metadata import enrich_metadata
 from pipelines.ingestion.indexing.qdrant import QdrantIndexer
 from pipelines.ingestion.loaders import docling_loader
@@ -28,9 +18,7 @@ from pipelines.ingestion.debug_dump import dump_debug_artifact
 
 logger = logging.getLogger(__name__)
 
-# One QdrantIndexer for the process's whole lifetime (owns a DB
-# connection) rather than rebuilt per ingestion job.
-_qdrant_indexer: Optional[QdrantIndexer] = None
+_qdrant_indexer: Optional[QdrantIndexer] = None  # one instance for the process lifetime, owns a DB connection
 
 
 def get_qdrant_indexer() -> QdrantIndexer:
@@ -41,8 +29,17 @@ def get_qdrant_indexer() -> QdrantIndexer:
 
 
 def _corpus_id_from_key(file_key: str) -> str:
-    """Keys are uploads/{corpus_id}/{file_id}.ext, corpus_id derived from
-    the object path itself, never client-supplied."""
+    """Extracts corpus_id from an S3 key (uploads/{corpus_id}/{file_id}.ext) — never client-supplied.
+
+    Args:
+        file_key: The S3 object key.
+
+    Returns:
+        The corpus_id.
+
+    Raises:
+        ValueError: If the key doesn't match the expected layout.
+    """
     parts = file_key.split("/")
     if len(parts) < 2 or parts[0] != "uploads":
         raise ValueError(f"Unexpected key layout, can't extract corpus_id: {file_key}")
@@ -50,8 +47,15 @@ def _corpus_id_from_key(file_key: str) -> str:
 
 
 async def _fetch_object(bucket: str, file_key: str) -> bytes:
-    """boto3 is sync — offloaded to a thread so it doesn't block the
-    event loop chat requests are also running on."""
+    """Fetches an object from S3/MinIO. boto3 is sync, offloaded to a thread.
+
+    Args:
+        bucket: The S3 bucket name.
+        file_key: The object key.
+
+    Returns:
+        The object's raw bytes.
+    """
     def _get():
         client = get_s3_client()
         obj = client.get_object(Bucket=bucket, Key=file_key)
@@ -61,8 +65,16 @@ async def _fetch_object(bucket: str, file_key: str) -> bytes:
 
 
 async def _parse_and_chunk(content: bytes, filename: str, corpus_id: str) -> List[Dict[str, Any]]:
-    """Format-agnostic — PDF/DOCX/HTML/MD all go through Docling's
-    DocumentConverter + HybridChunker (loaders/docling_loader.py)."""
+    """Parses and chunks a document via Docling, then enriches each chunk's metadata.
+
+    Args:
+        content: The raw file bytes.
+        filename: The original filename, used for format detection and citations.
+        corpus_id: The owning session's corpus id, for logging/debug artifacts.
+
+    Returns:
+        A list of chunk dicts, each with "text" and "metadata".
+    """
     chunks = await docling_loader.parse_and_chunk(content, filename, corpus_id)
     for chunk in chunks:
         chunk["metadata"].update(enrich_metadata(chunk["metadata"], chunk["text"]))
@@ -70,12 +82,28 @@ async def _parse_and_chunk(content: bytes, filename: str, corpus_id: str) -> Lis
 
 
 async def _embed(texts: List[str]) -> Tuple[List[List[float]], List[Dict[str, Any]]]:
+    """Embeds a batch of chunk texts, dense and sparse.
+
+    Args:
+        texts: The chunk texts to embed.
+
+    Returns:
+        A (dense_vectors, sparse_vectors) tuple, same order as the input.
+    """
     dense = await embedding_client.embed_documents(texts)
     sparse = await asyncio.to_thread(fastembed_client.embed_sparse, texts)
     return dense, sparse
 
 
 def _index_qdrant(chunks: List[Dict[str, Any]], dense: List[List[float]], sparse: List[Dict[str, Any]], corpus_id: str) -> None:
+    """Upserts one document's embedded chunks into Qdrant.
+
+    Args:
+        chunks: Chunk dicts with "text" and "metadata".
+        dense: Dense embedding vectors, same order as chunks.
+        sparse: Sparse embedding vectors, same order as chunks.
+        corpus_id: The owning session's corpus id, tagged on every point.
+    """
     batch = {
         "text": [c["text"] for c in chunks],
         "metadata": [c["metadata"] for c in chunks],
@@ -87,9 +115,11 @@ def _index_qdrant(chunks: List[Dict[str, Any]], dense: List[List[float]], sparse
 
 
 def bump_corpus_version(corpus_id: str) -> None:
-    """Sync Redis INCR — corpus_version increments when ingestion
-    COMPLETES, not at upload start (locked design; powers Phase 5's
-    before/after cache comparison)."""
+    """Increments the corpus_version counter on ingestion completion — powers the cache's before/after comparison.
+
+    Args:
+        corpus_id: The corpus whose version to bump.
+    """
     import redis as sync_redis
 
     client = sync_redis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -101,36 +131,39 @@ def bump_corpus_version(corpus_id: str) -> None:
 
 
 def _file_id_from_key(file_key: str) -> str:
-    """Keys are uploads/{corpus_id}/{file_id}.ext — file_id is the stem,
-    matching what upload.py generated and stored as Document.file_id.
-    No new data needs threading through the MinIO webhook payload."""
+    """Extracts file_id (the key's filename stem) from an S3 key — matches Document.file_id, no extra data needed from the webhook payload.
+
+    Args:
+        file_key: The S3 object key.
+
+    Returns:
+        The file_id.
+    """
     stem = file_key.rsplit("/", 1)[-1]
     return stem.rsplit(".", 1)[0] if "." in stem else stem
 
 
 async def run_ingestion(bucket: str, file_key: str) -> None:
-    """Entry point called from the MinIO webhook route as a FastAPI
-    BackgroundTask. Each stage's Document.status update (Phase 6) is
-    best-effort — a DB hiccup here shouldn't abort ingestion itself, it
-    just means ingest/status temporarily lags reality until the next
-    stage's write succeeds."""
+    """Runs the full ingestion pipeline for one uploaded file. Entry point for the MinIO webhook's background task.
+
+    Args:
+        bucket: The S3 bucket the file was uploaded to.
+        file_key: The S3 object key.
+    """
     corpus_id = _corpus_id_from_key(file_key)
     file_id = _file_id_from_key(file_key)
     logger.info(f"[ingest:{corpus_id}] stage=start file=s3://{bucket}/{file_key}")
 
     async def _set_status(status: str, error: str | None = None) -> None:
+        # Best-effort — a DB hiccup here shouldn't abort ingestion, it just means ingest/status
+        # temporarily lags reality until the next stage's write succeeds.
         try:
             await document_store.set_status(file_id, status, error)
         except Exception as e:
             logger.warning(f"[ingest:{corpus_id}] failed to update Document status={status}: {e}")
 
-    # Real filename for Docling/chunk metadata — NOT the S3 key stem
-    # ({file_id}.ext). Fixing a real bug here: chunk metadata's "filename"
-    # field previously got the S3 key stem, which flows straight into
-    # retriever.py's sources list and the responder's "[Source: X]"
-    # citation, showing users a meaningless UUID instead of their actual
-    # filename. The Document row (created in upload.py) already has the
-    # real name — this just uses it instead of re-deriving a fake one.
+    # Real filename, not the S3 key stem — feeds directly into retriever.py's sources list and
+    # the responder's "[Source: X]" citation.
     doc = await document_store.get_by_file_id(file_id)
     filename = doc.filename if doc else file_key.rsplit("/", 1)[-1]
 

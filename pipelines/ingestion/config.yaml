@@ -1,27 +1,26 @@
-# Centralized configuration file to manage all the parameters for ingestion pipeline.
+# Reference only — not loaded by the app at runtime. Source of truth: .env / config.py.
+# Ingestion config values, kept here to see in one place.
 
 chunking:
-	# 512 tokens is the "Goldilocks" zone for RAG (enough context, not too much noise)
-  chunk_size: 512
+  # Token-bounded via Docling's HybridChunker, not character/separator-based splitting.
+  max_tokens: 512          # CHUNK_MAX_TOKENS — should match the active embedder's own token ceiling
+  tokenizer: bge-large-en-v1.5  # matches FASTEMBED_MODEL, not an independent approximation
 
-	# Overlap ensures context isn't lost at the split point
-  chunk_overlap: 50
+table_structure:
+  mode: accurate            # TABLE_STRUCTURE_MODE — "accurate" | "fast"
+  ocr_enabled: false         # PDF_ENABLE_OCR — off for born-digital PDFs
 
-	# Separators for recursive splitting (Paragraphs -> Sentences -> Words)
-  separators: ["\n\n", "\n", " ", ""]
-
-embedding:
-  # The Ray Serve endpoint to use
-  endpoint: "http://ray-serve-embed:8000/embed"
-  batch_size: 16
-
-graph:
-  # Controls the LLM extraction speed vs cost
-  concurrency: 10
-
-  # If true, strictly adheres to the schema.py ontology
-  enforce_schema: true
+captioning:
+  enabled: true              # PDF_DESCRIBE_IMAGES
+  model: ministral-14b-2512  # MISTRAL_VISION_MODEL
+  min_interval_seconds: 2.0  # CAPTION_MIN_INTERVAL_SECONDS — respects a per-second provider limit
+  skip_classes: ""           # PICTURE_SKIP_CLASSES — comma-separated classifier labels to skip
 
 vector_db:
-  collection_name: "omnirag_collection"
-  distance_metric: "cosine"
+  collection: omnirag_collection  # QDRANT_COLLECTION
+  dense_dim: 1024
+  distance: cosine
+
+debug:
+  dump_enabled: true          # INGEST_DEBUG_DUMP — writes raw document content to disk, off before public deploy
+  dump_dir: logs/ingest_debug # INGEST_DEBUG_DIR

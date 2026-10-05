@@ -1,9 +1,5 @@
 """
-Optional debug artifacts for ingestion — writes intermediate pipeline
-output (parsed chunks, extracted graph data) to disk so output QUALITY
-can be inspected directly, not just inferred from log line counts.
-Gated by INGEST_DEBUG_DUMP (default on for local dev; turn off before the
-public demo — this writes raw document content to local disk).
+Writes intermediate ingestion output (parsed chunks, captioned figures) to disk, so output quality can be inspected directly instead of inferred from log line counts. Gated by INGEST_DEBUG_DUMP — turn off before a public deploy, since this writes raw document content to local disk.
 """
 import json
 import logging
@@ -16,6 +12,16 @@ logger = logging.getLogger(__name__)
 
 
 def dump_debug_artifact(corpus_id: str, stage: str, data: Any) -> Optional[str]:
+    """Writes one debug artifact as JSON, if debug dumping is enabled.
+
+    Args:
+        corpus_id: Used to scope the output path.
+        stage: Name for this artifact (e.g. "chunks", "docling_pictures").
+        data: JSON-serializable data to write.
+
+    Returns:
+        The path written, or None if dumping is disabled or the write failed.
+    """
     if not settings.INGEST_DEBUG_DUMP:
         return None
     try:
@@ -27,6 +33,5 @@ def dump_debug_artifact(corpus_id: str, stage: str, data: Any) -> Optional[str]:
         logger.info(f"[ingest:{corpus_id}] debug artifact written: {path}")
         return path
     except Exception as e:
-        # Never let a debug convenience break real ingestion.
         logger.warning(f"[ingest:{corpus_id}] failed to write debug artifact ({stage}): {e}")
         return None

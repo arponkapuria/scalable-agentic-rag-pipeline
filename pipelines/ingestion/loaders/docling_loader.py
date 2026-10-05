@@ -1,45 +1,9 @@
 """
-Unified parser + chunker for PDF/DOCX/HTML/MD via Docling — the active
-loader for the in-process (default, INGESTION_BACKEND=in_process)
-pipeline. One format-agnostic path replaces the old PDF-via-OpenDataLoader
-/ DOCX+HTML-via-homegrown-parsers split.
+Unified parser + chunker for PDF/DOCX/HTML/MD via Docling — one format-agnostic path for every supported file type, wired into pipeline.py.
 
-pipelines/ingestion/main.py (Ray path, frozen), loaders/opendataloader_pdf.py,
-loaders/docx.py, loaders/html.py, chunking/section_splitter.py, and
-chunking/splitter.py are all left untouched — INGESTION_BACKEND=ray still
-uses that original chain if ever reactivated. This module is wired into
-pipeline.py only.
+Layout detection and picture classification run via ONNXRuntime — no torch needed for either. Table structure (TableFormer) has no first-party ONNX path in mainline Docling, so it runs via torch — kept on anyway since table accuracy matters for this project's literature-survey corpus. Pinned to TableStructureOptions V1, not V2 — V2 has an open upstream bug duplicating rows on multi-page tables.
 
-Resourcing (why Docling is viable here now, see PROGRESS.md): layout
-detection (Heron/RT-DETR) and picture classification run via ONNXRuntime,
-configured below — no torch needed for either. Table structure
-(TableFormer) has no first-party ONNX path in mainline Docling (confirmed
-via Docling's own technical report: "For inference, our implementation
-relies on PyTorch") — kept enabled anyway since tables matter for a
-literature-survey corpus and accuracy is the top priority; the earlier
-Docling disk exhaustion was Docling's overall model/dependency footprint,
-not specifically a CUDA torch build (this repo's M1/Oracle-ARM targets
-never had a CUDA wheel in play regardless of library). Pinned to
-TableStructureOptions (V1, not V2) — V2 has an open bug (docling#3553,
-Jun 2026) duplicating rows on multi-page tables, exactly the shape of a
-references/bibliography table.
-
-Image captioning deliberately does NOT use Docling's built-in
-do_picture_description/PictureDescriptionApiOptions — that would call the
-vision API directly from inside Docling's own HTTP client, bypassing this
-app's shared BackendRateLimiter/CircuitBreaker on mistral_client that every
-other LLM/vision call goes through. Instead: Docling only classifies +
-crops figures (do_picture_classification=True, do_picture_description=
-False), and captioning is a separate step through mistral_client.
-
-NOT live-verified end-to-end in this environment (no network for a
-multi-hundred-MB install here) — several exact import paths below
-(OnnxRuntimeObjectDetectionEngineOptions' module, DocMeta field names)
-were confirmed via Docling's current docs/examples but not run. If an
-import fails or chunk.meta fields differ, run:
-    python -c "from docling_core.transforms.chunker.hierarchical_chunker import DocChunk; help(DocChunk)"
-to check the installed version's actual shape — same "verify against a
-real run" caveat opendataloader_pdf.py carried for the same reason.
+Image captioning deliberately does NOT use Docling's built-in picture-description option — that would call the vision API directly from inside Docling's own HTTP client, bypassing this app's shared rate limiter/circuit breaker on mistral_client that every other LLM/vision call goes through. Docling only classifies and crops figures here; captioning is a separate step through mistral_client.
 """
 import asyncio
 import base64
@@ -77,9 +41,8 @@ try:
     )
     _ONNX_LAYOUT_AVAILABLE = True
 except ImportError:
-    # Older/newer Docling may have moved these — fall back to Docling's
-    # own default engine (torch) rather than failing ingestion entirely.
-    # See module docstring's verification note.
+    # Older/newer Docling may have moved these — fall back to Docling's own default
+    # (torch-backed) engine rather than failing ingestion entirely.
     _ONNX_LAYOUT_AVAILABLE = False
 
 from services.api.app.config import settings
@@ -88,9 +51,7 @@ from pipelines.ingestion.debug_dump import dump_debug_artifact
 
 logger = logging.getLogger(__name__)
 
-# Built once, reused for the process's lifetime — model/tokenizer loading
-# is not free (same lazy-singleton pattern as models/embeddings/fastembed_client.py).
-_converter: Optional[DocumentConverter] = None
+_converter: Optional[DocumentConverter] = None  # built once, reused — model/tokenizer loading isn't free
 _chunker: Optional[HybridChunker] = None
 
 
@@ -124,25 +85,19 @@ def _build_converter() -> DocumentConverter:
             "Docling version — falling back to defaults (likely torch-backed)."
         )
 
-    # Own captioning pass below, not Docling's — see module docstring.
-    pipeline_options.do_picture_description = False
+    pipeline_options.do_picture_description = False  # own captioning pass below, not Docling's
     pipeline_options.generate_picture_images = True  # keeps cropped bitmaps available via PictureItem.get_image()
 
     return DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
         }
-        # DOCX/HTML/MD use Docling's own default (non-PDF) pipelines —
-        # no enrichment models needed for those formats.
+        # DOCX/HTML/MD use Docling's own default (non-PDF) pipelines — no enrichment models needed.
     )
 
 
 class _MarkdownTableSerializerProvider(ChunkingSerializerProvider):
-    """Docling's own documented pattern for overriding table serialization
-    in HybridChunker (see docling docs' "Advanced chunking &
-    serialization" page) — compact_tables=True drops extra Markdown
-    padding, no reason to keep it since these chunks are for
-    embedding/LLM consumption, not human display."""
+    """Overrides HybridChunker's table serialization to compact Markdown pipe tables, since these chunks are for embedding/LLM consumption, not human display."""
 
     def get_serializer(self, doc):
         return ChunkingDocSerializer(
@@ -153,33 +108,19 @@ class _MarkdownTableSerializerProvider(ChunkingSerializerProvider):
 
 
 def _build_chunker() -> HybridChunker:
-    # Tokenizer matches the real embedder (FASTEMBED_MODEL) so the token
-    # ceiling here is the one that actually matters at embed time — the
-    # code this replaces only approximated tokens via character count.
+    # Tokenizer matches the real embedder (FASTEMBED_MODEL), so the token ceiling here is the
+    # one that actually matters at embed time.
     hf_tokenizer = AutoTokenizer.from_pretrained(settings.FASTEMBED_MODEL)
     tokenizer = HuggingFaceTokenizer(tokenizer=hf_tokenizer, max_tokens=settings.CHUNK_MAX_TOKENS)
     return HybridChunker(
         tokenizer=tokenizer,
         merge_peers=True,
-        # Confirmed via live testing (not the docs default): Docling's
-        # default table serializer is TripletTableSerializer — one
-        # "RowLabel, ColLabel = value" line per cell, including empty
-        # cells as bare ".". For a real academic table (Table 3 in a
-        # transformer-architecture paper) this produced a wall of
-        # low-signal repeated text, at a real cost: this is very likely
-        # what was pushing graph extraction into max_tokens truncation on
-        # table-heavy chunks specifically. Switched to MarkdownTableSerializer
-        # (docling's own documented alternative) for a compact pipe-table
-        # instead — same information, far fewer tokens.
+        # Docling's default table serializer (TripletTableSerializer) produces a wall of
+        # low-signal text for real academic tables — MarkdownTableSerializer is far more compact
+        # for the same information.
         serializer_provider=_MarkdownTableSerializerProvider(),
-        # repeat_table_header defaults True already, but stated explicitly
-        # since we're overriding the serializer — a table split across
-        # chunks should keep its header in every fragment or entity
-        # extraction loses column meaning for later fragments. Docling has
-        # an open bug (docling#2975) where this doesn't always propagate
-        # correctly with MarkdownTableSerializer specifically — not fixed
-        # on our side, just something to watch for in chunks.json if a
-        # split table's later chunks look header-less.
+        # repeat_table_header defaults True, stated explicitly since the serializer is
+        # overridden — a table split across chunks should keep its header in every fragment.
         repeat_table_header=True,
     )
 
@@ -199,8 +140,7 @@ def _get_chunker() -> HybridChunker:
 
 
 def _convert_and_chunk_sync(file_bytes: bytes, filename: str) -> Tuple[Any, HybridChunker, list]:
-    """Runs in a worker thread (see parse_and_chunk) — both conversion
-    (layout/table inference) and chunking are CPU-bound/blocking."""
+    """Runs in a worker thread — both conversion and chunking are CPU-bound/blocking."""
     stream = DocumentStream(name=filename, stream=io.BytesIO(file_bytes))
     doc = _get_converter().convert(stream).document
     chunker = _get_chunker()
@@ -216,8 +156,17 @@ def _top_picture_class(picture: PictureItem) -> Optional[str]:
 
 
 async def _describe_image(png_bytes: bytes, filename: str, index: int, corpus_id: Optional[str]) -> Optional[str]:
-    """Shared, rate-limited mistral_client — soft-fails per image, never
-    fails the doc."""
+    """Captions one figure via the shared, rate-limited mistral_client.
+
+    Args:
+        png_bytes: The cropped figure image.
+        filename: The source document's filename, for logging.
+        index: The figure's position in the document, for logging.
+        corpus_id: For log-line scoping.
+
+    Returns:
+        The caption text, or None if captioning failed (soft-fails per image, never fails the doc).
+    """
     log_prefix = f"[ingest:{corpus_id}] " if corpus_id else ""
     try:
         b64_image = base64.b64encode(png_bytes).decode("utf-8")
@@ -243,12 +192,16 @@ async def _describe_image(png_bytes: bytes, filename: str, index: int, corpus_id
 
 
 async def _caption_pictures(doc: Any, filename: str, corpus_id: Optional[str]) -> Dict[str, str]:
-    """Returns {picture.self_ref: caption}. Skips pictures the classifier
-    scores into PICTURE_SKIP_CLASSES before spending a caption call —
-    direct answer to "don't burn API calls on logos." Sequential AND paced
-    (CAPTION_MIN_INTERVAL_SECONDS between call starts): Mistral's free plan
-    caps at 0.5 requests/second, a per-second limit the per-minute rate
-    limiter can't see, so back-to-back calls would draw 429s."""
+    """Captions every non-skipped figure in a document, sequentially and rate-paced.
+
+    Args:
+        doc: The parsed Docling document.
+        filename: The source document's filename, for logging.
+        corpus_id: For log-line scoping and the debug artifact.
+
+    Returns:
+        A dict mapping each captioned picture's self_ref to its caption text.
+    """
     log_prefix = f"[ingest:{corpus_id}] " if corpus_id else ""
     pictures = list(doc.pictures)
     if not pictures:
@@ -273,6 +226,8 @@ async def _caption_pictures(doc: Any, filename: str, corpus_id: Optional[str]) -
                 continue
             buf = io.BytesIO()
             image.save(buf, format="PNG")
+            # Paced, not just sequential — the provider's per-second cap is invisible to a
+            # per-minute rate limiter, so back-to-back calls would still draw 429s.
             wait = settings.CAPTION_MIN_INTERVAL_SECONDS - (time.monotonic() - last_call_started)
             if wait > 0:
                 await asyncio.sleep(wait)
@@ -308,10 +263,15 @@ async def _caption_pictures(doc: Any, filename: str, corpus_id: Optional[str]) -
 
 
 async def parse_and_chunk(file_bytes: bytes, filename: str, corpus_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Returns chunk dicts in the {"text", "metadata"} shape pipeline.py
-    already expects (enrich_metadata/embed/index_qdrant downstream) —
-    format-agnostic: PDF/DOCX/HTML/MD all go through this one path.
+    """Parses and chunks a document, with figures captioned inline.
+
+    Args:
+        file_bytes: The raw document bytes.
+        filename: The document's filename (used for format detection).
+        corpus_id: For log-line scoping and debug artifacts.
+
+    Returns:
+        A list of {"text", "metadata"} chunk dicts.
     """
     log_prefix = f"[ingest:{corpus_id}] " if corpus_id else ""
     ext = filename.lower().rsplit(".", 1)[-1]
@@ -347,9 +307,7 @@ async def parse_and_chunk(file_bytes: bytes, filename: str, corpus_id: Optional[
                 if isinstance(item, PictureItem) and item.self_ref in captions:
                     chunk_captions.append(captions[item.self_ref])
         except Exception as e:
-            # Defensive: don't let an unexpected docling_core shape kill
-            # ingestion — fall back to bare text, log for investigation
-            # (see module docstring's verification note).
+            # Defensive: don't let an unexpected docling_core shape kill ingestion.
             logger.warning(f"{log_prefix}Chunk metadata extraction fell back to defaults: {e}")
 
         if chunk_captions:
