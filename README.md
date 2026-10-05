@@ -2,9 +2,11 @@
 
 This branch contains the high-availability, production-scale deployment architecture of the Scalable Agentic RAG Pipeline.
 
+> A Work in Progress branch !
+
 ### Overview
 
-The `dev/aws-full-scale` branch represents the enterprise-scale deployment designed for high throughput, fault tolerance, and distributed inference workloads. Compared to the cost-optimized deployment in `main`, this architecture prioritizes scalability, availability, and operational resilience.
+The `dev/aws-full-scale` branch represents the enterprise-scale deployment designed for high throughput, fault tolerance, and distributed inference workloads. Compared to the cost-optimized deployment in `dev/cost-optimized`, this architecture prioritizes scalability, availability, and operational resilience.
 
 ### Key Characteristics
 
@@ -28,7 +30,7 @@ The `dev/aws-full-scale` branch represents the enterprise-scale deployment desig
 
 | Branch | Description |
 |---------|-------------|
-| `main` | Cost-optimized deployment |
+| `dev/cost-optmized` | Cost-optimized deployment |
 | `dev/aws-full-scale` | High-availability, enterprise-scale deployment |
 
 > For the recommended deployment path, refer to the `main` branch.
