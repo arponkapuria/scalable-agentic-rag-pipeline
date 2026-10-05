@@ -1,12 +1,5 @@
 """
-Validates the planner's parsed JSON against the values planner.py's own
-downstream code actually expects. A safety net on top of the existing
-`.get(...) or default` fallback (see planner.py's docstring on the
-Phase 6 null-handling fix) — NEVER stricter than that fallback, since a
-validator that rejects a case the lenient code used to handle would be a
-regression, not an improvement. An invalid/out-of-domain field is
-replaced with the same default the old code already fell back to;
-nothing here raises or drops the request.
+Validates and normalizes the planner's parsed JSON output, replacing an invalid or missing field with a safe default instead of raising.
 """
 from typing import Any
 
@@ -15,6 +8,14 @@ _VALID_TOOL_CHOICES = {"web_search", "sandbox", None}
 
 
 def validate_plan(plan: Any) -> dict:
+    """Coerces an invalid action or tool_choice to a safe default.
+
+    Args:
+        plan: The planner LLM's parsed JSON output (or anything else, if parsing failed upstream).
+
+    Returns:
+        A dict with valid "action" and "tool_choice" values. Empty dict if `plan` wasn't a dict to begin with.
+    """
     if not isinstance(plan, dict):
         return {}
     validated = dict(plan)

@@ -1,19 +1,11 @@
 """
-Guardrail pattern lists. Each entry is (compiled pattern, short label) so a
-block can be logged with WHY it fired, not just THAT it fired.
-
-Scoping rule followed throughout: patterns match multi-word phrases specific
-to an override/leak attempt, never a single common word — a paper can
-legitimately discuss "ignoring padding tokens" or a person named "Dan"
-without tripping anything here. tests/test_guardrails.py's must-not-block
-list is the actual spec for how narrow these need to be; a pattern that
-fails a case there gets narrowed, not the test loosened.
+Regex pattern lists used by the input and output guardrail checks. Each entry pairs a compiled pattern with a short label so a block can be logged with a reason. Patterns match multi-word phrases specific to an override or leak attempt, never a single common word, so legitimate questions aren't blocked by accident.
 """
 import re
 
 _F = re.IGNORECASE
 
-# --- Input: prompt injection / jailbreak / persona-override attempts ---
+# Input: blocks prompt injection, jailbreak, and persona-override attempts
 INPUT_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"ignore\s+(all\s+|any\s+)?(the\s+)?(previous|above|prior)\s+instructions", _F), "override_instructions"),
     (re.compile(r"(disregard|forget)\s+(your\s+|all\s+)?(previous\s+)?(instructions|rules|guidelines)", _F), "override_instructions"),
@@ -24,7 +16,7 @@ INPUT_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"\bdo\s+anything\s+now\b", _F), "persona_override"),
 )
 
-# --- Output: the model repeating its own system prompt or internal state ---
+# Output: blocks the model repeating its own system prompt or internal instructions
 OUTPUT_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"you\s+are\s+a\s+helpful\s+(enterprise\s+)?assistant", _F), "system_prompt_leak"),
     (re.compile(r"my\s+(system\s+)?instructions\s+(are|include|say)", _F), "system_prompt_leak"),
@@ -32,8 +24,5 @@ OUTPUT_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"\[?system\s*prompt\]?\s*:", _F), "system_prompt_leak"),
 )
 
-# A single request pasting in tens of thousands of characters is either
-# abuse (token-budget exhaustion) or a mistake — either way, decline before
-# it reaches the planner. Generous on purpose: real questions, even long
-# multi-part ones, run a few hundred characters.
+# A request this long is either abuse or a mistake, so it's declined before reaching the planner. Generous on purpose: real questions, even long ones, run a few hundred characters.
 MAX_INPUT_CHARS = 4000

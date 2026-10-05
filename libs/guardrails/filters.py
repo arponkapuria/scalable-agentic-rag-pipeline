@@ -1,9 +1,5 @@
 """
-Two check functions (input, output) plus guard_output(), the single call
-site that applies the output check to whatever generate_node produced —
-so responder.py's two answer-generating paths (_answer_from_documents,
-_answer_conversationally) and the sandbox echo path all get covered by
-ONE wrapper instead of three separate checks.
+Guardrail check functions. check_input validates a user message before it reaches the LLM, check_output validates a generated answer before it's returned, and guard_output applies the output check in one place for every answer-generating code path in the agent.
 """
 import logging
 from typing import Optional
@@ -15,7 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 def check_input(text: str) -> Optional[str]:
-    """Returns the label of the first pattern that matched, or None."""
+    """Checks a user message against the length cap and injection/jailbreak patterns.
+
+    Args:
+        text: Raw user message.
+
+    Returns:
+        The label of the first pattern that matched (or "input_too_long"), or None if the input is clean.
+    """
     if len(text) > MAX_INPUT_CHARS:
         return "input_too_long"
     for pattern, label in INPUT_PATTERNS:
@@ -25,6 +28,14 @@ def check_input(text: str) -> Optional[str]:
 
 
 def check_output(text: str) -> Optional[str]:
+    """Checks a generated answer for system-prompt leakage.
+
+    Args:
+        text: The model's generated answer text.
+
+    Returns:
+        The label of the first pattern that matched, or None if clean.
+    """
     for pattern, label in OUTPUT_PATTERNS:
         if pattern.search(text):
             return label
@@ -32,12 +43,14 @@ def check_output(text: str) -> Optional[str]:
 
 
 def guard_output(result: dict) -> dict:
-    """Applied once, in generate_node, to whichever branch produced the
-    final answer — mutates result['messages'][-1] in place if the output
-    guard fires, and returns the same dict either way. backend_used/
-    model_used are cleared to match the shape every other system-produced
-    (non-model) message already uses in responder.py, so a blocked answer
-    reads identically to a deterministic refusal downstream."""
+    """Runs check_output on the agent's final answer and replaces it with a fixed message if it fails.
+
+    Args:
+        result: The agent state dict, containing at least "messages".
+
+    Returns:
+        The same dict, with the last message replaced and backend_used/model_used cleared if the guard fired.
+    """
     messages = result.get("messages") or []
     if not messages:
         return result
