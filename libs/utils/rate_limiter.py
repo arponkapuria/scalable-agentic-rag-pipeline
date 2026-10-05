@@ -1,28 +1,5 @@
 """
-Proactive client-side rate limiting — checked BEFORE attempting a call,
-not discovered via a 429 after the fact. Two real, different provider
-behaviors drove this design, confirmed via each provider's docs:
-
-Groq: returns live x-ratelimit-* headers on EVERY response (success or
-429) — x-ratelimit-remaining-requests, -tokens, -reset-requests,
--reset-tokens. Limits are enforced PER MODEL (RPM+RPD+TPM+TPD
-simultaneously). Static known limits below seed the tracker; real
-headers correct it as soon as any call is made, becoming the source of
-truth over the static estimate.
-
-OpenRouter: successful responses carry NO rate-limit headers at all —
-only error responses do (X-RateLimit-Limit/-Remaining/-Reset, request-
-count only, no token dimension). Worse: failed/429 attempts still
-consume the daily quota, same as a successful call. There is no live
-signal on the (common) success path, so this is local-count-only there —
-the entire value is refusing to attempt a call we can already predict
-will fail, since a failed attempt costs exactly as much as a successful
-one. Limit is ACCOUNT-LEVEL (shared across every model), not per-model.
-
-Static limits are current as of this session (told directly by the
-person running this project) — Groq/OpenRouter free-tier limits shift
-over time; re-verify against console.groq.com/settings/limits and
-openrouter.ai/docs/limits if behavior seems off.
+Client-side rate limiter for LLM API calls, checked before a call is attempted rather than relying on an HTTP 429 response. Tracks usage locally per time window (requests and tokens, per minute and per day), and switches to a provider's own live rate-limit headers when they're available, since those are more accurate than a local estimate.
 """
 import time
 from dataclasses import dataclass, field
@@ -31,14 +8,12 @@ from typing import Optional
 
 @dataclass
 class _Window:
-    """Tracks usage within one rolling time window (e.g. 'requests per minute')."""
+    """Tracks usage within one rolling time window, e.g. "requests per minute"."""
     limit: Optional[int]
     period_seconds: float
     count: int = 0
     window_start: float = field(default_factory=time.monotonic)
-    # Live, provider-reported values (Groq always; OpenRouter on error
-    # only) — None until a real header arrives, then preferred over the
-    # local estimate until it expires.
+    # Live, provider-reported values — None until a real header arrives, then preferred over the local estimate until it expires.
     live_remaining: Optional[int] = None
     live_reset_at: Optional[float] = None
 
@@ -49,8 +24,13 @@ class _Window:
             self.count = 0
 
     def remaining(self) -> Optional[int]:
+        """Returns remaining quota for this window — a live provider value if fresh, else the local estimate.
+
+        Returns:
+            None if this window has no configured limit, else the remaining count.
+        """
         if self.limit is None:
-            return None  # no cap tracked for this window/metric
+            return None  # no cap tracked for this window
         now = time.monotonic()
         if self.live_remaining is not None and self.live_reset_at and now < self.live_reset_at:
             return self.live_remaining
@@ -58,19 +38,29 @@ class _Window:
         return max(0, self.limit - self.count)
 
     def record_attempt(self, amount: int = 1):
+        """Records local usage against this window and the live estimate, if one exists.
+
+        Args:
+            amount: Units consumed — 1 for a request window, token count for a token window.
+        """
         self._maybe_roll()
         self.count += amount
         if self.live_remaining is not None:
             self.live_remaining = max(0, self.live_remaining - amount)
 
     def record_live(self, remaining: int, reset_in_seconds: float):
+        """Overwrites the local estimate with a provider-reported live value.
+
+        Args:
+            remaining: Remaining quota per the provider's own response headers.
+            reset_in_seconds: Seconds until this window resets, per the provider.
+        """
         self.live_remaining = remaining
         self.live_reset_at = time.monotonic() + max(reset_in_seconds, 0.0)
 
 
 class ModelRateLimiter:
-    """One of these per (backend, model) for Groq-style per-model limits,
-    or one shared instance for OpenRouter-style account-level limits."""
+    """Tracks request and token limits for one model, or one account-level pool shared across models."""
 
     def __init__(
         self,
@@ -79,12 +69,26 @@ class ModelRateLimiter:
         tpm: Optional[int] = None,
         tpd: Optional[int] = None,
     ):
+        """Args:
+            rpm: Requests per minute limit, if any.
+            rpd: Requests per day limit, if any.
+            tpm: Tokens per minute limit, if any.
+            tpd: Tokens per day limit, if any.
+        """
         self.requests_minute = _Window(rpm, 60) if rpm else None
         self.requests_day = _Window(rpd, 86400) if rpd else None
         self.tokens_minute = _Window(tpm, 60) if tpm else None
         self.tokens_day = _Window(tpd, 86400) if tpd else None
 
     def can_proceed(self, estimated_tokens: int = 0) -> bool:
+        """Checks every configured window before a call is attempted.
+
+        Args:
+            estimated_tokens: Estimated token cost of the upcoming call (see estimate_tokens()).
+
+        Returns:
+            False if any request or token window is exhausted; True otherwise.
+        """
         for window in (self.requests_minute, self.requests_day):
             if window is not None:
                 remaining = window.remaining()
@@ -98,6 +102,11 @@ class ModelRateLimiter:
         return True
 
     def record_attempt(self, estimated_tokens: int = 0):
+        """Records one call attempt across every configured request and token window.
+
+        Args:
+            estimated_tokens: Token cost to charge against the token windows.
+        """
         for window in (self.requests_minute, self.requests_day):
             if window is not None:
                 window.record_attempt(1)
@@ -106,12 +115,11 @@ class ModelRateLimiter:
                 window.record_attempt(estimated_tokens)
 
     def record_groq_headers(self, headers) -> None:
-        """Groq's requests/tokens headers don't self-identify which
-        window (RPM vs RPD, TPM vs TPD) they represent — community
-        reports say "requests" commonly maps to RPD and "tokens" to TPM,
-        but this varies by account/tier. Applied to whichever window is
-        actually configured for this model, preferring the daily/minute
-        window that exists."""
+        """Updates live usage from Groq's rate-limit response headers.
+
+        Args:
+            headers: The response headers dict from a Groq API call.
+        """
         try:
             if "x-ratelimit-remaining-requests" in headers:
                 remaining = int(headers["x-ratelimit-remaining-requests"])
@@ -129,7 +137,11 @@ class ModelRateLimiter:
             pass  # malformed header — keep the local estimate, don't crash the call
 
     def record_openrouter_headers(self, headers) -> None:
-        """Only present on OpenRouter error responses, request-count only."""
+        """Updates live usage from OpenRouter's rate-limit response headers (present on error responses only).
+
+        Args:
+            headers: The response headers dict from an OpenRouter API call.
+        """
         try:
             if "x-ratelimit-remaining" in headers:
                 remaining = int(headers["x-ratelimit-remaining"])
@@ -142,7 +154,14 @@ class ModelRateLimiter:
 
 
 def _parse_groq_reset(value: str) -> float:
-    """Groq reset format: '1.2s', '120ms', '2m59.56s', '6m0s'."""
+    """Parses Groq's reset-duration format, e.g. "1.2s", "120ms", "2m59.56s".
+
+    Args:
+        value: The raw header value.
+
+    Returns:
+        Seconds until reset, or 60.0 if the value can't be parsed.
+    """
     value = value.strip()
     try:
         if value.endswith("ms"):
@@ -158,7 +177,14 @@ def _parse_groq_reset(value: str) -> float:
 
 
 def _parse_openrouter_reset(value) -> float:
-    """OpenRouter's X-RateLimit-Reset is a Unix timestamp (ms), per docs."""
+    """Parses OpenRouter's reset timestamp (Unix ms) into seconds remaining.
+
+    Args:
+        value: The raw header value.
+
+    Returns:
+        Seconds until reset, or 60.0 if the value is missing or can't be parsed.
+    """
     if not value:
         return 60.0
     try:
@@ -169,17 +195,23 @@ def _parse_openrouter_reset(value) -> float:
 
 
 class BackendRateLimiter:
-    """
-    Owns per-model trackers (Groq: limits differ per model) or one shared
-    tracker (OpenRouter: one account-level pool regardless of model).
-    """
+    """Owns per-model trackers, or one shared tracker for an account-level pool."""
 
     def __init__(self, shared: bool = False):
+        """Args:
+            shared: True for one account-level pool shared across every model; False for one tracker per model.
+        """
         self._shared = shared
         self._trackers: dict[str, ModelRateLimiter] = {}
         self._shared_tracker: Optional[ModelRateLimiter] = None
 
     def register(self, model: str, **limits):
+        """Creates and stores a ModelRateLimiter for the given model, or as the shared tracker.
+
+        Args:
+            model: Model id. Ignored, but still required, when shared=True.
+            **limits: rpm/rpd/tpm/tpd kwargs forwarded to ModelRateLimiter.
+        """
         tracker = ModelRateLimiter(**limits)
         if self._shared:
             self._shared_tracker = tracker
@@ -187,15 +219,27 @@ class BackendRateLimiter:
             self._trackers[model] = tracker
 
     def get(self, model: str) -> Optional[ModelRateLimiter]:
+        """Returns the tracker for this model, or the shared tracker if shared=True.
+
+        Args:
+            model: Model id to look up.
+
+        Returns:
+            The matching ModelRateLimiter, or None if never registered.
+        """
         if self._shared:
             return self._shared_tracker
         return self._trackers.get(model)
 
 
 def estimate_tokens(messages: list[dict]) -> int:
-    """Rough ~4 chars/token heuristic — not exact, just enough to avoid
-    obviously blowing a TPM/TPD budget. A real tokenizer would be more
-    accurate but adds a dependency for a proactive-only estimate that
-    gets corrected by live headers on the next call anyway."""
+    """Estimates token count from character count, using a rough ~4 chars/token heuristic.
+
+    Args:
+        messages: Chat messages (OpenAI-compatible dicts with a "content" key).
+
+    Returns:
+        Estimated total token count, minimum 1.
+    """
     total_chars = sum(len(m.get("content", "")) for m in messages)
     return max(1, total_chars // 4)

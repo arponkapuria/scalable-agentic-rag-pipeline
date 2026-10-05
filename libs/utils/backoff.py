@@ -1,7 +1,6 @@
 """
-We use a formula `base * (2 ^ retries) + random_jitter` to calculate the delay before each retry. This helps us to prevent the Thundering Herd problem where multiple clients retry at the same time.
+Decorator that retries an async HTTP call with exponential backoff and jitter, so repeated failures back off instead of hammering the server immediately.
 """
-
 import logging
 import functools
 import random
@@ -10,10 +9,17 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
 def exponential_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
-    """
-    Decorator for Exponential Backoff with Jitter.
-    Retries async functions upon exception.
+    """Decorator that retries an async function on httpx.HTTPError with exponential backoff and jitter.
+
+    Args:
+        max_retries: Number of retries before the exception is re-raised.
+        base_delay: Base delay in seconds before the first retry.
+        max_delay: Upper bound on the exponential delay (jitter is added on top).
+
+    Returns:
+        The decorator, wrapping the target async function.
     """
     def decorator(func):
         @functools.wraps(func)
@@ -26,9 +32,8 @@ def exponential_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay
                     if retries >= max_retries:
                         logger.error(f"Max retries reached for {func.__name__}: {e}")
                         raise e
-                    
-                    # Algorithm: base * (2 ^ retries) + random_jitter
-                    # Jitter prevents "Thundering Herd" problem on the server
+
+                    # delay = base * 2^retries, capped, plus random jitter to spread out concurrent retries
                     delay = min(base_delay * (2 ** retries), max_delay)
                     jitter = random.uniform(0, 0.5)
                     sleep_time = delay + jitter
