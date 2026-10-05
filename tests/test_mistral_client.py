@@ -1,3 +1,7 @@
+"""
+Tests for MistralClient: the rate limiter matches Mistral's free-plan limits, and the client targets the Mistral API with the configured vision model.
+"""
+
 from services.api.app.clients.llm.mistral_client import MistralClient, _build_mistral_rate_limiter
 from services.api.app.config import settings
 

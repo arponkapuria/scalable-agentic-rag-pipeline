@@ -1,3 +1,7 @@
+"""
+Tests for truncated-answer handling: the LLM client records finish_reason (and warns on "length"), FailoverLLMClient mirrors it, the responder appends TRUNCATION_NOTE only to cut-off answers, and the configured ANSWER_MAX_TOKENS cap is passed to the LLM.
+"""
+
 import asyncio
 import logging
 from types import SimpleNamespace

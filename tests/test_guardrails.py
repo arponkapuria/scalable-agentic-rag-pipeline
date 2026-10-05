@@ -1,11 +1,6 @@
 """
-The pattern lists themselves are the thing under test, so this file is
-built around two explicit lists — MUST_BLOCK and MUST_NOT_BLOCK — rather
-than a handful of scattered asserts. A pattern change that breaks either
-list is a real regression: too loose (misses an attack) or too tight
-(blocks a legitimate research question). MUST_NOT_BLOCK is the more
-important of the two — it's what stops "hardening" from making the
-guardrail actively harmful, per the caution this was scoped with.
+Unit tests for libs.guardrails (check_input, check_output, guard_output, validate_plan).
+Driven by explicit MUST_BLOCK / MUST_NOT_BLOCK lists, so a pattern change that misses an attack or blocks a legitimate research question fails the build. Also covers the guard_output() wrapper and validate_plan()'s safe fallbacks.
 """
 import pytest
 

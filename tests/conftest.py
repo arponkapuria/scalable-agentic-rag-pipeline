@@ -1,13 +1,7 @@
+# Pytest bootstrap: force-sets the env vars that config.py's Settings() needs at import time (DB, Redis, S3, Groq, OpenRouter). Uses direct assignment, not setdefault(), so a real .env or shell values can never leak in and tests stay hermetic.
+
 import os
 
-# config.py's Settings() instantiates at import time and requires these,
-# AND loads the repo's real .env file if present (env_file=".env" in
-# Settings.Config). pydantic-settings' precedence is os.environ > .env
-# file > field defaults — so setdefault() here is not enough on a machine
-# with a real .env populated (every dev machine, from Phase 0 onward):
-# the .env file's real values would still win over an unset os.environ
-# var. Force-assign instead, so tests are hermetic regardless of what's
-# in .env or the shell.
 os.environ["DATABASE_URL"] = "postgresql+asyncpg://test:test@localhost:5432/test"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["S3_BUCKET_NAME"] = "test-bucket"

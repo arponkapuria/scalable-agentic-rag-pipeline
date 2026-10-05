@@ -1,3 +1,10 @@
+"""
+Tests for the LLM client layer: per-backend model-priority fallback (OpenAICompatibleClient),
+Groq <-> OpenRouter failover (FailoverLLMClient), config parsing of comma-separated model lists,
+and build_llm_client() backend selection (api, ollama, vllm_local, vllm_modal, invalid).
+All HTTP calls are mocked.
+"""
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 

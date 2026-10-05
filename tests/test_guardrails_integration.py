@@ -1,8 +1,5 @@
 """
-Two end-to-end checks: the input guard actually short-circuits chat.py
-before any cache/LLM work happens, and the output guard actually fires
-through generate_node's real dispatch (not just guard_output() in
-isolation, which test_guardrails.py already covers directly).
+End-to-end guardrail checks through the real call paths: the input guard must short-circuit chat_stream before any cache/LLM work, and the output guard must fire inside generate_node (blocking a leaked system prompt while leaving normal answers untouched). Complements test_guardrails.py, which tests the guard functions in isolation.
 """
 import asyncio
 import json

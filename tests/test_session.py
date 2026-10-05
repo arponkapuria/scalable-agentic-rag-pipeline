@@ -1,3 +1,7 @@
+"""
+Tests for session management: SessionStore (Redis sorted-set create, touch, TTL validity, expired-session purge) and the get_corpus_id FastAPI dependency (401 on a missing or invalid cookie, touch-and-return on a valid one). Redis is mocked.
+"""
+
 import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch

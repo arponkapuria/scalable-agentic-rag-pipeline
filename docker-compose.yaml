@@ -1,7 +1,9 @@
 name: omnirag
 
+# Local development services. Each one belongs to a profile, so the ones you need for start: make up PROFILE=core,cache
+# The API runs on your host machine (make dev), not in Docker, which is why every port is published to localhost.
 services:
-  # 1. Postgres (Chat History) — profile: core
+  # Chat history database (profile: core)
   postgres:
     image: postgres:15-alpine
     container_name: omnirag-postgres
@@ -15,9 +17,7 @@ services:
     volumes:
       - omnirag_pg_data:/var/lib/postgresql/data
 
-  # 2. Redis (Session storage + cache) — profile: cache
-  # Needed as early as Phase 2 (session storage), not just Phase 5 (caching) — same
-  # container, two uses, brought up once under one profile.
+  # Session storage and response cache (profile: cache). One container serves both uses.
   redis:
     image: redis/redis-stack-server:7.4.0-v3
     container_name: omnirag-redis
@@ -26,7 +26,7 @@ services:
       - "6379:6379"
     mem_limit: 512m
 
-  # 3. Qdrant (Vector DB) — profile: vector
+  # Vector database for embeddings and search (profile: vector)
   qdrant:
     image: qdrant/qdrant:v1.17.0
     container_name: omnirag-qdrant
@@ -36,14 +36,7 @@ services:
     volumes:
       - omnirag_qdrant_data:/qdrant/storage
 
-  # Sandbox code-exec service — profile: sandbox. Was never added here
-  # despite PROJECT_INSTRUCTIONS.md's profile table and Phase 6 both
-  # listing it as required; sandbox.py's hardcoded K8s-only hostname
-  # ("sandbox-service") also could never have resolved from a host-run
-  # `make dev` process even if this block had existed — see config.py's
-  # SANDBOX_URL comment. Port published to localhost, matching every
-  # other local service here, since the API runs on the HOST, not in
-  # Docker, for local dev.
+  # Isolated service for running generated code (profile: sandbox)
   sandbox:
     build: ./services/sandbox
     container_name: omnirag-sandbox
@@ -51,13 +44,9 @@ services:
     ports:
       - "8080:8080"
     mem_limit: 256m
-    # network-policy.yaml's egress-deny is a K8s NetworkPolicy resource —
-    # has no Docker Compose equivalent, so it is NOT enforced locally.
-    # This is a real, known gap for the local/demo build (PROJECT_INSTRUCTIONS.md
-    # flags this exact requirement) — tracked in PROGRESS.md's Open Problems,
-    # not silently ignored.
+    # Note: outbound network access is not blocked here. The egress restriction is a Kubernetes NetworkPolicy and has no Docker Compose equivalent, so treat this sandbox as local-only.
 
-  # 4. MinIO (S3-compatible object storage) — profile: storage
+  # S3-compatible object storage for uploaded documents (profile: storage)
   minio:
     image: minio/minio
     container_name: omnirag-minio
@@ -77,14 +66,8 @@ services:
       timeout: 5s
       retries: 5
 
-  # 5b. One-shot: bucket + webhook event-notification setup (profile: storage)
-  # MinIO's webhook notification target POSTs the same S3-event schema AWS
-  # uses, so s3_event_handler.py's handle_s3_event() works for both — this
-  # just wires MinIO to call the API's receiver route on every upload.
-  # host.docker.internal reaches the host's FastAPI process (`make dev`
-  # runs uvicorn on the host, not in a container) from inside this
-  # container; extra_hosts makes that resolve on Linux too, not just
-  # Docker Desktop.
+  # One-time setup for MinIO (profile: storage). Creates the bucket and sends an upload notification to the API for every new file. 
+  # host.docker.internal lets the container reach the API on your host, and extra_hosts makes that name work on Linux too.
   minio-init:
     image: minio/mc
     container_name: omnirag-minio-init
@@ -94,6 +77,7 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Keeps retrying until the API is running, since the webhook can't be registered while its endpoint is unreachable.
     entrypoint: >
       sh -c '
       mc alias set local http://minio:9000 omnirag_admin omnirag_dev_password &&
