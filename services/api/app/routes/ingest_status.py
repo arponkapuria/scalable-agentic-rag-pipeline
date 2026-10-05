@@ -1,13 +1,5 @@
 """
-GET /api/v1/ingest/status/{file_id} (Phase 6) — reads the Document row
-pipeline.py writes to as ingestion progresses. Didn't exist before Phase
-6: uploads previously had no queryable state at all client-side, just
-server logs.
-
-corpus_id ownership is checked here (not just existence) — a session
-shouldn't be able to poll another corpus's document status by guessing a
-file_id, same boundary every other data-touching route enforces via
-get_corpus_id.
+Ingestion status endpoint: reads the document row that the ingestion pipeline updates stage-by-stage, so the frontend can poll upload progress instead of relying on server logs.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -32,11 +24,20 @@ async def get_ingest_status(
     file_id: str,
     corpus_id: str = Depends(get_corpus_id),
 ):
+    """Returns the current ingestion status for one uploaded file.
+
+    Args:
+        file_id: The document to look up.
+        corpus_id: The caller's session — ownership is checked, not just existence.
+
+    Returns:
+        IngestStatusResponse with the document's current stage.
+
+    Raises:
+        HTTPException: 404 if the document doesn't exist or belongs to another corpus.
+    """
     doc = await document_store.get_by_file_id(file_id)
     if doc is None or doc.corpus_id != corpus_id:
-        # Same 404 for "doesn't exist" and "belongs to another corpus" —
-        # doesn't leak whether a given file_id exists to a caller who
-        # doesn't own it.
         raise HTTPException(status_code=404, detail="Document not found")
 
     return IngestStatusResponse(

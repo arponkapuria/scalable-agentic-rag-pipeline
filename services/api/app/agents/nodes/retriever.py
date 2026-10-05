@@ -1,3 +1,6 @@
+"""
+Hybrid retrieval node: embeds the query, searches Qdrant with dense+sparse vectors fused by RRF, then reranks and keeps the top N.
+"""
 import asyncio
 import logging
 from typing import Dict
@@ -7,22 +10,19 @@ from services.api.app.clients.embedding import embedding_client
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.reranker import reranker_client
 from services.api.app.config import settings
-from models.embeddings.fastembed_client import fastembed_client
+from services.api.app.clients.fastembed_client import fastembed_client
 
 logger = logging.getLogger(__name__)
 
 
 async def retrieve_node(state: AgentState) -> Dict:
-    """
-    Hybrid retrieval, scoped to one corpus_id throughout:
-    1. Embed the query (dense via FailoverEmbeddingClient, sparse via
-       FastEmbed BM25).
-    2. Qdrant hybrid search (dense+sparse, RRF-fused, corpus_id-filtered).
-    3. Rerank the candidates, keep top N.
+    """Runs hybrid retrieval for the current query, scoped to one corpus_id.
 
-    Neo4j/graph search removed from this path (project scope narrowed to
-    ingestion + hybrid retrieval + reranking — no graph DB) — this is now
-    pure vector retrieval, no multi-hop/citation branch.
+    Args:
+        state: Current agent state. Reads "current_query" and "corpus_id".
+
+    Returns:
+        Partial update with "documents", "tool_used" ("vector_search"), and "sources".
     """
     query = state["current_query"]
     corpus_id = state["corpus_id"]
@@ -60,9 +60,7 @@ async def retrieve_node(state: AgentState) -> Dict:
     final_docs = ranked[: settings.RERANK_TOP_N]
     logger.info(f"[retrieve:{corpus_id}] stage=rerank status=done candidates={len(docs)} kept={len(final_docs)}")
 
-    # Sources parsed back out of the "[Source: filename]" suffix
-    # appended above — cheap enough not to thread a separate structured-
-    # sources channel through for this.
+    # Parsed back out of the "[Source: filename]" suffix appended above.
     sources = []
     for doc in final_docs:
         if "[Source: " in doc:

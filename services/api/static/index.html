@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OmniRAG</title>
+<title>DocRAG</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap');
 
@@ -270,7 +270,7 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
 
 <header>
-  <h1>OmniRAG</h1>
+  <h1>DocRAG</h1>
   <p> Agentic Hybrid Retrieval Over Your Documents.</p>
 </header>
 
@@ -300,8 +300,7 @@ const chatEl = document.getElementById('chat');
 const docListEl = document.getElementById('doc-list');
 const uploadStatusEl = document.getElementById('upload-status');
 
-// Display-only mapping (frontend, no backend meaning attached) — friendly
-// labels for the LangGraph node names streamed by chat/stream's status events.
+// Friendly labels for the LangGraph node names streamed by chat/stream's status events.
 const NODE_LABELS = {
   planner: 'Planning',
   retriever: 'Retrieving documents',
@@ -311,11 +310,8 @@ const NODE_LABELS = {
 
 function initials(role) { return role === 'user' ? 'U' : 'AI'; }
 
-// Model output already carries inline "[Source: X]" tags per responder.py's
-// citation instruction (a locked RAG design choice — not changed here).
-// Stripped from the rendered prose and shown instead as a clean list below,
-// built from the same `sources` array the backend already returns —
-// avoids a raw bracketed citation breaking up a sentence mid-paragraph.
+// Strips the inline "[Source: X]" citation tags from rendered prose — shown instead as a
+// clean chip list built from the `sources` array (see renderExtras below).
 const SOURCE_TAG_RE = /\s*\[Source:[^\]]*\]/gi;
 
 function renderMarkdown(text) {
@@ -362,21 +358,11 @@ function addGeneratingRow() {
 }
 
 function renderBadges(row, data) {
-  // insertAdjacentHTML, NOT row.innerHTML += — the row already has
-  // renderFeedback's buttons (with live event listeners) in it.
-  // `innerHTML +=` serializes the WHOLE element back to a string and
-  // re-parses it from scratch, silently destroying every existing child
-  // node — including those listeners — and replacing them with inert
-  // copies that look identical but do nothing on click. Real bug found
-  // live: this caused thumbs up/down to render correctly but not
-  // respond to clicks at all, no error, no network request.
+  // insertAdjacentHTML, not row.innerHTML += — the row already has renderFeedback's buttons
+  // with live listeners, and += re-parses the whole element, silently destroying them.
 
-  // Provider + model combined into one badge (Phase 6 follow-up) —
-  // backend_used is always populated ("none" when no LLM call was made,
-  // e.g. sandbox echo / deterministic guards — never blank), and
-  // model_used is only ever non-empty alongside a real backend, so
-  // showing them together is always accurate: "GroqClient ·
-  // openai/gpt-oss-120b" or just "none".
+  // backend_used is always populated ("none" when no LLM call was made); model_used is only
+  // ever set alongside a real backend — combining them is always accurate.
   const backendLabel = data.backend_used || 'none';
   const modelLabel = data.model_used ? ` · ${data.model_used}` : '';
   row.insertAdjacentHTML('beforeend', `<span class="badge">${backendLabel}${modelLabel}</span>`);
@@ -390,8 +376,7 @@ function renderBadges(row, data) {
 }
 
 function renderExtras(container, data) {
-  // Distinct filenames only — retriever.py can return one entry per
-  // chunk, so the same document may appear more than once.
+  // Distinct filenames only — the same document can appear more than once (one entry per chunk).
   const uniqueSources = [...new Set(data.sources || [])];
   if (uniqueSources.length > 0) {
     const src = document.createElement('div');
@@ -430,10 +415,6 @@ async function submitFeedback(messageId, score, category, container) {
 }
 
 function renderFeedback(row, messageId) {
-  // Stored as a signal for manual review / Phase 9 eval material, not
-  // acted on automatically — a single vote (honest or not) at this
-  // project's traffic volume isn't a reliable enough signal to trigger
-  // anything on its own. See PROGRESS.md's Open Problems.
   if (messageId == null) return; // cache-hit paths always have one; defensive only
 
   const wrap = document.createElement('span');
@@ -448,9 +429,7 @@ function renderFeedback(row, messageId) {
   });
 
   wrap.querySelector('.fb-down').addEventListener('click', () => {
-    // Pre-defined categories (industry-standard pattern: faster to act
-    // on than free text alone) — expands in place, doesn't interrupt
-    // the chat flow with a modal.
+    // Expands in place instead of a modal, so it doesn't interrupt the chat flow.
     wrap.innerHTML = FEEDBACK_CATEGORIES.map(c =>
       `<button class="fb-cat" data-key="${c.key}">${c.label}</button>`
     ).join('') + '<button class="fb-cat fb-skip">Skip</button>';
@@ -463,8 +442,7 @@ function renderFeedback(row, messageId) {
     });
   });
 
-  // Feedback FIRST in the row, badges after — matches the requested order.
-  row.insertBefore(wrap, row.firstChild);
+  row.insertBefore(wrap, row.firstChild); // feedback first in the row, badges after
 }
 
 document.getElementById('chat-form').addEventListener('submit', async (e) => {
@@ -501,9 +479,7 @@ document.getElementById('chat-form').addEventListener('submit', async (e) => {
       const data = JSON.parse(line);
 
       if (data.type === 'status') {
-        // Keeps the same single "generating" indicator alive, just swaps
-        // its label — never stacks a growing log, mirrors how Claude/
-        // ChatGPT show one live step indicator while a response streams.
+        // Swaps the label on one live indicator rather than stacking a growing log.
         stageLabelEl.textContent = (NODE_LABELS[data.node] || data.node) + '…';
       } else if (data.type === 'answer') {
         generatingRow.remove();
@@ -574,13 +550,9 @@ document.getElementById('upload-btn').addEventListener('click', async () => {
   const { upload_url, file_id, corpus_id } = await presignResp.json();
 
   uploadStatusEl.textContent = 'Uploading...';
-  // upload.py signs Metadata (original_filename, corpus_id) into the
-  // presigned URL alongside ContentType — a presigned PUT with signed
-  // metadata is REJECTED (400/403 SignatureDoesNotMatch) unless the
-  // actual request sends matching x-amz-meta-* headers with the exact
-  // same values. corpus_id comes from the presign response itself, NOT
-  // document.cookie — the session cookie is httpOnly (Phase 2, by
-  // design) and is invisible to JS.
+  // Must match the Metadata signed into the presigned URL exactly, or MinIO rejects the PUT.
+  // corpus_id comes from the presign response, not document.cookie — the session cookie is
+  // httpOnly and invisible to JS.
   const putResp = await fetch(upload_url, {
     method: 'PUT',
     body: file,

@@ -1,5 +1,6 @@
-"""GET /api/v1/corpus/documents (Phase 6) — lists every Document row for
-the caller's own corpus_id, for the chat UI's document panel."""
+"""
+Corpus endpoint: lists every uploaded document for the caller's own session, for the chat UI's document panel.
+"""
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
@@ -20,6 +21,14 @@ class DocumentSummary(BaseModel):
 
 @router.get("/documents", response_model=list[DocumentSummary])
 async def list_documents(corpus_id: str = Depends(get_corpus_id)):
+    """Lists every document uploaded to the caller's corpus.
+
+    Args:
+        corpus_id: The caller's session, injected from the session cookie.
+
+    Returns:
+        A list of DocumentSummary, one per uploaded file.
+    """
     docs = await document_store.list_by_corpus_id(corpus_id)
     return [
         DocumentSummary(

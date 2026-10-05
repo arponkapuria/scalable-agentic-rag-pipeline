@@ -1,18 +1,21 @@
+"""
+vLLM backend client — a locally-hosted or cloud-GPU-hosted model server. Manual-select only; cold starts make it unsuitable for auto-failover.
+"""
 from services.api.app.clients.llm.openai_compatible import OpenAICompatibleClient
 from services.api.app.config import settings
 
 
 class VLLMClient(OpenAICompatibleClient):
-    """vLLM's OpenAI-compatible server. Manual-select only, never an
-    auto-failover target — cold starts make live GPU inference too risky
-    for a demo. Used to record one-time clips proving the real engine
-    works, then the live path reverts to Groq/OpenRouter.
-
-    variant="metal": local Mac (vllm-metal), small quantized model.
-    variant="modal": Modal-hosted GPU, within Modal's $30/mo free credit.
-    """
+    """vLLM's OpenAI-compatible server. "metal" runs locally on Apple Silicon; "modal" runs on Modal-hosted GPU infrastructure."""
 
     def __init__(self, variant: str = "metal"):
+        """Args:
+            variant: "metal" for a local vLLM server, "modal" for a Modal-hosted one.
+
+        Raises:
+            RuntimeError: If variant is "modal" but VLLM_MODAL_URL isn't configured.
+            ValueError: If variant is neither "metal" nor "modal".
+        """
         if variant == "metal":
             base_url = settings.VLLM_METAL_URL
             models = settings.VLLM_METAL_MODELS

@@ -1,27 +1,35 @@
+"""
+Health check endpoints: liveness (process is running) and readiness (dependencies are reachable).
+"""
 from fastapi import APIRouter, Response, status
 from services.api.app.cache.redis import redis_client
 
 router = APIRouter()
 
+
 @router.get("/liveness")
 async def liveness():
-    """
-    K8s Liveness Probe.
-    Returns 200 if the server process is running.
+    """Returns 200 if the server process is running.
+
+    Returns:
+        A fixed status dict.
     """
     return {"status": "ok"}
 
+
 @router.get("/readiness")
 async def readiness(response: Response):
-    """
-    K8s Readiness Probe.
-    Checks connections to critical dependencies (Redis, DB).
-    If this fails, K8s stops sending traffic to this pod.
+    """Checks connections to critical dependencies. Sets a 503 status if any are down.
+
+    Args:
+        response: The FastAPI response, whose status code is set on failure.
+
+    Returns:
+        A dict reporting each dependency's status.
     """
     status_report = {"redis": "down"}
     is_healthy = True
 
-    # 1. Check Redis
     try:
         r = redis_client.get_client()
         if await r.ping():
@@ -33,5 +41,5 @@ async def readiness(response: Response):
 
     if not is_healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    
+
     return status_report

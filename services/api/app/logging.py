@@ -1,3 +1,7 @@
+"""
+Configures the root logger on import: a human-readable console handler, plus a rotating JSON file handler for structured, parseable logs.
+"""
+
 import logging
 import logging.handlers
 import json
@@ -33,9 +37,7 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_record)
 
 class ConsoleFormatter(logging.Formatter):
-    """level + message only — readable in a dev terminal. Console stays
-    human-readable; the file handler below is where the structured,
-    parseable copy lives."""
+    """level + message only — readable in a dev terminal. Console stays human-readable; the file handler carries the structured copy"""
     def format(self, record):
         line = f"{record.levelname}: {record.getMessage()}"
         if record.exc_info:
@@ -43,18 +45,7 @@ class ConsoleFormatter(logging.Formatter):
         return line
 
 def setup_logging():
-    """
-    Console: plain level+message, human-readable, real TTY (so uvicorn's
-    own colored access-log output — method/path/status — keeps working
-    natively; don't pipe `make dev` through `tee`/`grep` to get logs, use
-    the file below instead).
-
-    File: rotating, JSON-structured, one line per record — the standard
-    split (humans read the console, tools/log-aggregation read the file).
-    Rotates by size so a long-running dev/demo process doesn't grow an
-    unbounded log file; old files are numbered suffixes
-    (api.log.1, api.log.2, ...), oldest deleted past LOG_BACKUP_COUNT.
-    """
+    """Attaches a console handler and a rotating JSON file handler to the root logger."""
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(ConsoleFormatter())
 
@@ -77,11 +68,7 @@ def setup_logging():
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
     
-    # Silence noisy libraries. uvicorn.access is left ENABLED — it's the
-    # only thing that prints the HTTP method/path/status line per
-    # request, and it attaches its own handler/formatter directly to this
-    # logger (independent of root), which is what gives it native color
-    # in a real terminal.
+    # uvicorn.access is left enabled — it attaches its own handler directly and prints the method/path/status line per request.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Initialize on import

@@ -1,3 +1,6 @@
+"""
+FastAPI dependency that derives corpus_id from the session cookie. Every data-touching route depends on this — corpus_id is never accepted from the client any other way.
+"""
 from fastapi import HTTPException, Request, status
 
 from services.api.app.config import settings
@@ -7,9 +10,17 @@ SESSION_COOKIE_NAME = "corpus_id"
 
 
 async def get_corpus_id(request: Request) -> str:
-    """Derives corpus_id server-side from the httpOnly session cookie.
-    Never accepts a client-supplied corpus_id on data-touching routes —
-    the cookie, set only by POST /session/init, is the single source."""
+    """Reads and validates the session cookie, refreshing its TTL on success.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The validated corpus_id.
+
+    Raises:
+        HTTPException: 401 if the cookie is missing or the session has expired.
+    """
     corpus_id = request.cookies.get(SESSION_COOKIE_NAME)
 
     if not corpus_id or not await session_store.is_valid(corpus_id, settings.SESSION_TTL_MINUTES):
@@ -18,6 +29,5 @@ async def get_corpus_id(request: Request) -> str:
             detail="No active session. Call POST /api/v1/session/init first.",
         )
 
-    # Sliding window: any authenticated activity extends the session.
     await session_store.touch(corpus_id)
     return corpus_id

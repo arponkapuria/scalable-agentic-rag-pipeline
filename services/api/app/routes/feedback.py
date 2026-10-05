@@ -1,3 +1,6 @@
+"""
+Feedback endpoint: records a thumbs up/down (with optional category and comment) against a specific assistant response.
+"""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from services.api.app.memory.postgres import AsyncSessionLocal
@@ -6,23 +9,30 @@ from services.api.app.session.dependency import get_corpus_id
 
 router = APIRouter()
 
+
 class FeedbackRequest(BaseModel):
-    message_id: int  # ID of the assistant ChatHistory row (returned as
-                      # ChatResponse.message_id — Phase 6 follow-up)
-    score: int        # 1 (thumbs up) or -1 (thumbs down)
+    message_id: int  # the assistant ChatHistory row id, returned as ChatResponse.message_id
+    score: int  # 1 (thumbs up) or -1 (thumbs down)
     category: str | None = None  # e.g. "inaccurate" | "not_relevant" | "incomplete" | "harmful" — thumbs-down only
     comment: str | None = None
+
 
 @router.post("/")
 async def submit_feedback(
     req: FeedbackRequest,
     corpus_id: str = Depends(get_corpus_id)
 ):
-    """
-    Submit user feedback for an AI response. Uses the Feedback ORM model
-    (Phase 6) — previously a raw text() INSERT that had drifted out of
-    sync with memory/models.py's Feedback class (same table, columns
-    matched, but the model itself was unused dead weight).
+    """Records feedback for an assistant response.
+
+    Args:
+        req: The feedback payload.
+        corpus_id: The caller's session, injected from the session cookie.
+
+    Returns:
+        A fixed acknowledgement dict.
+
+    Raises:
+        HTTPException: 500 if the write fails.
     """
     try:
         async with AsyncSessionLocal() as session:

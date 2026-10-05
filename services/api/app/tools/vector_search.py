@@ -1,16 +1,22 @@
+"""
+Vector search tool: lets the agent explicitly invoke hybrid retrieval as a tool call, using the same dense+sparse/RRF path the retriever node uses for the default retrieval flow.
+"""
 import asyncio
 
-from models.embeddings.fastembed_client import fastembed_client
+from services.api.app.clients.fastembed_client import fastembed_client
 from services.api.app.clients.embedding import embedding_client
 from services.api.app.clients.qdrant import qdrant_client
 
 
 async def search_vector_tool(query: str, corpus_id: str) -> str:
-    """
-    Tool: Search the Vector Database for documents, scoped to one
-    corpus_id (never cross-tenant). Same hybrid dense+BM25/RRF path
-    retriever_node uses, kept in sync rather than a second retrieval
-    implementation for the manual tool-call path.
+    """Searches the vector database, scoped to one corpus_id.
+
+    Args:
+        query: The search query.
+        corpus_id: Restricts results to this corpus only — never cross-tenant.
+
+    Returns:
+        Formatted search results, or a message if none were found or the search failed.
     """
     try:
         dense_vector, sparse_vector = await asyncio.gather(

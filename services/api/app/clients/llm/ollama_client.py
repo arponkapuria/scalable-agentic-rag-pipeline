@@ -1,10 +1,12 @@
+"""
+Local Ollama backend — offline, local development only. Manual-select only (LLM_BACKEND=ollama); never an auto-failover target.
+"""
 from services.api.app.clients.llm.openai_compatible import OpenAICompatibleClient
 from services.api.app.config import settings
 
 
 class OllamaClient(OpenAICompatibleClient):
-    """Local Mac dev, offline, $0. Manual-select only (LLM_BACKEND=ollama) —
-    never an auto-failover target. Spun up live exactly once, in Phase 9."""
+    """Local Ollama server, reached via its OpenAI-compatible endpoint."""
 
     def __init__(self):
         super().__init__(

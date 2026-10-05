@@ -1,8 +1,5 @@
 """
-Groq, OpenRouter, Ollama, and both vLLM variants all speak the OpenAI
-/chat/completions schema, so one base class covers them all — thin
-subclasses just supply base_url/models/api_key. Mirrors the raw-httpx
-pattern already used by clients/ray_llm.py rather than adding an SDK dep.
+Shared base class for every LLM backend speaking the OpenAI /chat/completions schema. Thin subclasses just supply base_url/models/api_key.
 """
 
 import httpx
@@ -18,45 +15,15 @@ logger = logging.getLogger(__name__)
 
 
 class ModelExhaustedError(Exception):
-    """Every model in this backend's priority list failed (or was already
-    known rate-limited). Signals the factory's failover wrapper (if any)
-    to try the backup backend."""
+    """Every model in this backend's priority list failed or was already rate-limited."""
 
 
 class OpenAICompatibleClient(LLMClient):
-    """
-    Tries `models` in priority order per call. Before attempting a model
-    at all, checks its rate-limit budget (libs/utils/rate_limiter.py) —
-    if that model is already known to be exhausted (locally tracked,
-    corrected by live provider headers when available), it's SKIPPED with
-    no HTTP call whatsoever, not attempted-then-caught. This is the actual
-    efficiency win on free-tier limits: a skipped call costs nothing,
-    whereas even a failed attempt burns quota on some providers
-    (OpenRouter's daily cap counts failed attempts the same as successful
-    ones).
+    """Tries each configured model in order, skipping rate-limited ones, and falls over to the next model on failure.
 
-    Each model that IS attempted gets exponential_backoff's own retries
-    first; only a fully-exhausted model (still failing after backoff)
-    causes a move to the next model in the list. If every model is either
-    rate-limited or fails, raises ModelExhaustedError.
-
-    Two ways the model list gets reordered/narrowed before that walk:
-    - `dispatch_strategy="round_robin"` (Groq only — see groq_client.py):
-      rotates which model starts the list each call, so load spreads
-      across all configured models with SEPARATE budgets instead of
-      always exhausting models[0] first.
-    - `chat_completion(..., model=X)`: caller pins one specific model,
-      tried FIRST, before the rest of this backend's own priority list —
-      used by heuristic model-tier routing and any single-model client
-      like Mistral captioning. Falls through to the remaining models on
-      failure rather than raising immediately (a pin expresses "prefer
-      this one," not "only ever try this one").
-
-    A circuit breaker sits in front of the whole backend: once
-    CIRCUIT_FAILURE_THRESHOLD consecutive ModelExhaustedErrors happen
-    (every model failed, repeatedly), further calls fail fast for a
-    cooldown window instead of re-attempting every model's full retry
-    sequence again.
+    A circuit breaker sits in front of the whole backend: after repeated exhaustion, calls fail
+    fast for a cooldown window. A pin via chat_completion(model=X) is tried first but still
+    falls through to the rest of the list on failure.
     """
 
     def __init__(
@@ -78,33 +45,18 @@ class OpenAICompatibleClient(LLMClient):
         self._rate_limiter = rate_limiter
         self._header_style = header_style
         self._dispatch_strategy = dispatch_strategy
-        # Round-robin only matters when a backend has several models with
-        # SEPARATE budgets (Groq: per-model RPM/RPD/TPM/TPD) — rotating
-        # which model is tried first spreads load instead of always
-        # hammering models[0] until it's exhausted before touching the
-        # rest. Not used for "priority" backends (OpenRouter's budget is
-        # account-level anyway, so rotation buys nothing there).
         self._rr_index = 0
-        # Populated on every successful chat_completion() — the actual
-        # model id that answered (Phase 6 follow-up), separate from
-        # last_backend_used (FailoverLLMClient, one level up) which only
-        # tracks WHICH BACKEND (Groq vs OpenRouter), not which of that
-        # backend's several models actually responded. Needed to show
-        # this in the UI, and to stop the earlier "which model actually
-        # answered" mystery that only server logs could (sometimes)
-        # answer, and only for paths that explicitly logged it.
         self.last_model_used: str = ""
-        # Why the last successful call stopped: "stop" (finished) or "length"
-        # (hit max_tokens — the answer is cut off). Same attribute pattern as
-        # last_model_used; read by responder.py to flag truncated answers.
         self.last_finish_reason: str = ""
 
     async def start(self):
+        """Opens the underlying HTTP client.
+
+        Raises:
+            RuntimeError: If no models are configured.
+        """
         if not self.models:
-            raise RuntimeError(
-                f"{self.__class__.__name__}: no models configured "
-                f"(check the corresponding *_MODELS var in .env)"
-            )
+            raise RuntimeError(f"{self.__class__.__name__}: no models configured")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
         self.client = httpx.AsyncClient(
@@ -113,6 +65,7 @@ class OpenAICompatibleClient(LLMClient):
         logger.info(f"{self.__class__.__name__} initialized ({len(self.models)} model(s) configured).")
 
     async def close(self):
+        """Closes the underlying HTTP client."""
         if self.client:
             await self.client.aclose()
             logger.info(f"{self.__class__.__name__} closed.")
@@ -125,29 +78,29 @@ class OpenAICompatibleClient(LLMClient):
         model: Optional[str] = None,
         max_tokens: int = 1024,
     ) -> str:
+        """Sends a chat completion request, trying models in order until one succeeds.
+
+        Args:
+            messages: Chat messages in OpenAI format.
+            temperature: Sampling temperature.
+            json_mode: Whether to request a structured JSON response.
+            model: Optional pin to one specific model, tried first.
+            max_tokens: Caps response length.
+
+        Returns:
+            The assistant's text response.
+
+        Raises:
+            ModelExhaustedError: If every model in the list is rate-limited or fails.
+        """
         if not self.client:
             raise RuntimeError(f"{self.__class__.__name__} not started. Call start() first.")
 
-        # Fail fast if this backend has been exhausted repeatedly and is
-        # still cooling down — skips straight to ModelExhaustedError
-        # without burning another full model-list retry sequence.
         try:
             self._circuit.before_call()
         except CircuitOpenError as e:
             raise ModelExhaustedError(str(e)) from e
 
-        # Caller pinned a specific model (e.g. heuristic routing) — tried
-        # FIRST (so routing/consistency intent is honored), but falls
-        # through to the rest of this backend's priority list on failure
-        # rather than raising immediately. Real regression this fixes:
-        # a bare single-model pin with no fallback meant one bad response
-        # (e.g. empty content) from that one model failed the whole call,
-        # even though this backend has other models with separate
-        # budgets that could have served it — live-observed for
-        # planner/query-rewriter after they were pinned to
-        # MODEL_TIER_SIMPLE and that model started returning empty
-        # content repeatedly. responder.py's routed_model pin had this
-        # same exposure since Phase 3-5, just not yet triggered live.
         if model is not None:
             models_to_try = [model] + [m for m in self.models if m != model]
         elif self._dispatch_strategy == "round_robin" and self.models:
@@ -164,13 +117,8 @@ class OpenAICompatibleClient(LLMClient):
         for model in models_to_try:
             tracker = self._rate_limiter.get(model) if self._rate_limiter else None
 
-            # Proactive skip — no HTTP call at all if we already know this
-            # model's budget is exhausted. This is the real efficiency
-            # win: a skipped call costs nothing; an attempted-then-failed
-            # one can cost real quota (OpenRouter counts failed attempts
-            # against the daily cap).
             if tracker is not None and not tracker.can_proceed(estimated_tokens):
-                logger.info(f"{self.__class__.__name__}: skipping '{model}' — locally tracked as rate-limited.")
+                logger.info(f"{self.__class__.__name__}: skipping '{model}' — rate-limited.")
                 continue
 
             any_attempted = True
@@ -192,15 +140,6 @@ class OpenAICompatibleClient(LLMClient):
                 choice = response.json()["choices"][0]
                 content = choice["message"]["content"]
 
-                # Bug 1 fix: an HTTP 200 with empty/blank content (observed
-                # from groq/compound under load) was previously treated as
-                # success — silently returned, no retry, no failover. That
-                # produced ~15% silent data loss in the graph-extraction
-                # step this project used to have (empty string handed to
-                # json.loads() -> "Expecting value" error, swallowed by
-                # its own soft-fail). Empty output is a failure like any
-                # other here now — still applies to every LLM call made
-                # today, not just the removed graph step.
                 if not content or not content.strip():
                     raise ValueError(f"model '{model}' returned empty content")
 
@@ -208,10 +147,7 @@ class OpenAICompatibleClient(LLMClient):
                 self.last_model_used = model
                 self.last_finish_reason = choice.get("finish_reason") or ""
                 if self.last_finish_reason == "length":
-                    logger.warning(
-                        f"{self.__class__.__name__}: '{model}' hit max_tokens={max_tokens} — "
-                        f"answer truncated ({len(content)} chars). Raise the caller's cap if this recurs."
-                    )
+                    logger.warning(f"{self.__class__.__name__}: '{model}' hit max_tokens={max_tokens} — answer truncated.")
                 return content
             except (httpx.HTTPStatusError, httpx.TransportError) as e:
                 last_error = e
@@ -226,12 +162,16 @@ class OpenAICompatibleClient(LLMClient):
 
         self._circuit.record_failure()
         if not any_attempted:
-            logger.warning(f"{self.__class__.__name__}: all {len(models_to_try)} model(s) skipped — rate-limited, no calls made.")
-        raise ModelExhaustedError(
-            f"{self.__class__.__name__}: all {len(models_to_try)} model(s) exhausted"
-        ) from last_error
+            logger.warning(f"{self.__class__.__name__}: all {len(models_to_try)} model(s) skipped — rate-limited.")
+        raise ModelExhaustedError(f"{self.__class__.__name__}: all {len(models_to_try)} model(s) exhausted") from last_error
 
     def _record_headers(self, tracker, headers) -> None:
+        """Updates the rate-limit tracker from the provider's response headers, if any.
+
+        Args:
+            tracker: The ModelRateLimiter for the model just called, or None.
+            headers: The response headers dict.
+        """
         if tracker is None:
             return
         if self._header_style == "groq":
@@ -241,14 +181,19 @@ class OpenAICompatibleClient(LLMClient):
 
     @exponential_backoff(max_retries=2)
     async def _post_with_retry(self, payload: dict) -> httpx.Response:
+        """Posts to /chat/completions, retrying on failure.
+
+        Args:
+            payload: The request body.
+
+        Returns:
+            The HTTP response.
+
+        Raises:
+            httpx.HTTPStatusError: On a 4xx/5xx response, with the response body in the message.
+        """
         response = await self.client.post("/chat/completions", json=payload)
         if response.status_code >= 400:
-            # raise_for_status()'s default message is just the status
-            # line ("400 Bad Request for url ...") — it drops the actual
-            # error body, which is where Groq/OpenRouter/Mistral explain
-            # WHY (e.g. "max_tokens exceeds model limit", "response_format
-            # not supported for this model"). Without this, every 400 was
-            # a guessing game instead of an actual diagnosis.
             try:
                 detail = response.json()
             except Exception:

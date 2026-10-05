@@ -1,3 +1,6 @@
+"""
+Postgres persistence: PostgresMemory manages chat history and cascade deletion, DocumentStore tracks each uploaded file's ingestion lifecycle.
+"""
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -7,34 +10,40 @@ from sqlalchemy import select, delete
 from services.api.app.config import settings
 from services.api.app.memory.models import ChatHistory, Feedback, Document
 
-# Async Engine & Session
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
-AsyncSessionLocal = sessionmaker(
-    bind=engine, class_=AsyncSession, expire_on_commit=False
-)
+AsyncSessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
 
 class PostgresMemory:
-    """
-    Manager for persisting conversation state.
-    """
+    """Manages persisting and reading conversation history."""
+
     async def add_message(self, corpus_id: str, role: str, content: str) -> int:
-        """Returns the new row's id — needed (Phase 6 follow-up) so the
-        frontend can attach feedback to a specific assistant message via
-        POST /feedback's message_id field."""
+        """Persists one chat message.
+
+        Args:
+            corpus_id: The session's corpus id.
+            role: "user" | "assistant" | "system".
+            content: The message text.
+
+        Returns:
+            The new row's id.
+        """
         async with AsyncSessionLocal() as session:
             async with session.begin():
-                msg = ChatHistory(
-                    corpus_id=corpus_id,
-                    role=role,
-                    content=content,
-                )
+                msg = ChatHistory(corpus_id=corpus_id, role=role, content=content)
                 session.add(msg)
-                await session.flush()  # populates msg.id before commit
+                await session.flush()
                 return msg.id
 
     async def get_history(self, corpus_id: str, limit: int = 10):
-        """
-        Fetch last N messages for context window.
+        """Fetches the most recent messages for a corpus, in chronological order.
+
+        Args:
+            corpus_id: The session's corpus id.
+            limit: Max number of messages to return.
+
+        Returns:
+            A list of ChatHistory rows, oldest first.
         """
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -43,15 +52,14 @@ class PostgresMemory:
                 .order_by(ChatHistory.created_at.desc())
                 .limit(limit)
             )
-            # Reverse to get chronological order (Oldest -> Newest)
             return result.scalars().all()[::-1]
 
     async def delete_by_corpus_id(self, corpus_id: str) -> None:
-        """Cascade-delete hook for session expiry (session/cleanup.py) —
-        removes this corpus's chat history, feedback, and document rows.
-        None of the three has a DB-level FK/cascade constraint between
-        them, so each is cleared explicitly here rather than relying on
-        ON DELETE CASCADE."""
+        """Deletes every chat history, feedback, and document row for a corpus.
+
+        Args:
+            corpus_id: The session's corpus id.
+        """
         async with AsyncSessionLocal() as session:
             async with session.begin():
                 await session.execute(delete(ChatHistory).where(ChatHistory.corpus_id == corpus_id))
@@ -60,10 +68,17 @@ class PostgresMemory:
 
 
 class DocumentStore:
-    """CRUD for the 'documents' table — the persisted state ingest/status
-    and corpus/documents read from (Phase 6)."""
+    """CRUD for the documents table."""
 
     async def create_pending(self, file_id: str, corpus_id: str, filename: str, s3_key: str) -> None:
+        """Creates a new document row at upload time.
+
+        Args:
+            file_id: Unique id for this upload.
+            corpus_id: The owning session's corpus id.
+            filename: The original uploaded filename.
+            s3_key: The object storage key the file will be written to.
+        """
         async with AsyncSessionLocal() as session:
             async with session.begin():
                 session.add(Document(
@@ -72,14 +87,19 @@ class DocumentStore:
                 ))
 
     async def set_status(self, file_id: str, status: str, error: Optional[str] = None) -> None:
-        """Called by pipeline.py after each stage. error is only ever set
-        alongside status="failed"."""
+        """Updates a document's ingestion stage.
+
+        Args:
+            file_id: The document to update.
+            status: The new stage string.
+            error: Error detail — set alongside status="failed".
+        """
         async with AsyncSessionLocal() as session:
             async with session.begin():
                 result = await session.execute(select(Document).where(Document.file_id == file_id))
                 doc = result.scalar_one_or_none()
                 if doc is None:
-                    return  # shouldn't happen — upload.py always creates the row first
+                    return
                 doc.status = status
                 if error is not None:
                     doc.error = error
@@ -87,6 +107,12 @@ class DocumentStore:
                     doc.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     async def set_complete(self, file_id: str, chunk_count: int) -> None:
+        """Marks a document as fully ingested.
+
+        Args:
+            file_id: The document to update.
+            chunk_count: Number of chunks produced during ingestion.
+        """
         async with AsyncSessionLocal() as session:
             async with session.begin():
                 result = await session.execute(select(Document).where(Document.file_id == file_id))
@@ -98,11 +124,27 @@ class DocumentStore:
                 doc.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     async def get_by_file_id(self, file_id: str) -> Optional[Document]:
+        """Fetches one document by its file_id.
+
+        Args:
+            file_id: The document to look up.
+
+        Returns:
+            The matching Document row, or None.
+        """
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(Document).where(Document.file_id == file_id))
             return result.scalar_one_or_none()
 
     async def list_by_corpus_id(self, corpus_id: str) -> list[Document]:
+        """Lists every document for a corpus, newest first.
+
+        Args:
+            corpus_id: The session's corpus id.
+
+        Returns:
+            A list of Document rows.
+        """
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(Document).where(Document.corpus_id == corpus_id).order_by(Document.created_at.desc())
@@ -110,16 +152,11 @@ class DocumentStore:
             return list(result.scalars().all())
 
     async def fail_orphaned(self) -> int:
-        """Startup reconciliation (Phase 6 follow-up) — a killed process
-        never runs run_ingestion()'s except block, so a Document row can
-        be left frozen at a non-terminal status forever, and the
-        frontend's ingest/status polling loop then polls it forever too.
-        Called once from main.py's lifespan on boot: any row still
-        in-flight when THIS process starts couldn't have been left by a
-        task this process is running (nothing survives a restart), so
-        it's safe to assume every such row belongs to a previous,
-        now-dead process and mark it failed. Returns the count fixed, for
-        a startup log line."""
+        """Marks any document stuck at a non-terminal status as failed — run once at startup.
+
+        Returns:
+            Number of rows marked failed.
+        """
         NON_TERMINAL = ("pending", "fetching", "parsing", "embedding", "indexing")
         async with AsyncSessionLocal() as session:
             async with session.begin():

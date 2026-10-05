@@ -1,3 +1,6 @@
+"""
+HyDE (Hypothetical Document Embeddings): generates a fake but plausibly-worded answer to embed instead of the raw question, for a closer vector match. Opt-in per request, off by default.
+"""
 from services.api.app.clients.llm.factory import llm_client
 
 SYSTEM_PROMPT = """
@@ -9,17 +12,20 @@ that a relevant document would have.
 Question: {question}
 """
 
+
 async def generate_hypothetical_document(question: str) -> str:
-    """
-    Generates a fake document to improve vector similarity search.
+    """Generates a hypothetical answer document to improve vector similarity search.
+
+    Args:
+        question: The user's question.
+
+    Returns:
+        A generated paragraph, or the original question unchanged if generation fails.
     """
     try:
-        hypothetical_doc = await llm_client.chat_completion(
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT.format(question=question)},
-            ],
-            temperature=0.7 # Higher temp to generate diverse vocabulary
+        return await llm_client.chat_completion(
+            messages=[{"role": "system", "content": SYSTEM_PROMPT.format(question=question)}],
+            temperature=0.7,
         )
-        return hypothetical_doc
     except Exception:
-        return question # Fallback
+        return question

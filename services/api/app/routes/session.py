@@ -1,3 +1,6 @@
+"""
+Session endpoint: issues the httpOnly corpus_id cookie that every other data-touching route depends on.
+"""
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
 
@@ -14,6 +17,12 @@ class SessionResponse(BaseModel):
 
 
 def _set_cookie(response: Response, corpus_id: str) -> None:
+    """Sets the session cookie with the standard flags.
+
+    Args:
+        response: The FastAPI response to attach the cookie to.
+        corpus_id: The session's corpus id.
+    """
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=corpus_id,
@@ -26,10 +35,15 @@ def _set_cookie(response: Response, corpus_id: str) -> None:
 
 @router.post("/init", response_model=SessionResponse)
 async def init_session(request: Request, response: Response):
-    """Issues a corpus_id (= session_id) as an httpOnly cookie on first
-    visit. If a valid session cookie is already present, refreshes its
-    TTL and returns the existing corpus_id instead of minting a new one —
-    reloading the page shouldn't orphan the caller's corpus."""
+    """Issues a corpus_id as an httpOnly cookie, or refreshes an existing valid one.
+
+    Args:
+        request: Incoming request, checked for an existing session cookie.
+        response: Response to attach the (possibly new) cookie to.
+
+    Returns:
+        SessionResponse with the corpus_id and whether it was newly created.
+    """
     existing = request.cookies.get(SESSION_COOKIE_NAME)
 
     if existing and await session_store.is_valid(existing, settings.SESSION_TTL_MINUTES):

@@ -1,51 +1,34 @@
+"""
+Async Qdrant client: hybrid dense+sparse collection, hybrid/dense-only/sparse-only search, and corpus-scoped deletion.
+"""
 from qdrant_client import AsyncQdrantClient, models
 from services.api.app.config import settings
 
+
 class VectorDBClient:
-    """
-    Async Client for Qdrant.
-    """
+    """Async client for Qdrant."""
+
     def __init__(self):
         self.client = AsyncQdrantClient(
             host=settings.QDRANT_HOST,
             port=settings.QDRANT_PORT,
-            # In prod, we might enable gRPC for slightly faster performance
-            prefer_grpc=False
+            prefer_grpc=False,
         )
         self._collections_ready = False
 
-    # Lazy, not called from app startup — connects to Qdrant on first
-    # actual use instead of unconditionally at boot. Keeps the app
-    # bootable on whatever Docker profile is currently up (e.g. Phase 2's
-    # core+cache, no vector profile), matching embed_client's
-    # existing lazy-connect pattern. Guarded by _collections_ready so
-    # concurrent first-callers don't all race to create collections.
     async def init_collections(self):
+        """Creates the main collection if it doesn't exist yet. Idempotent, lazy."""
         if self._collections_ready:
             return
 
         collections = await self.client.get_collections()
         existing = {c.name for c in collections.collections}
 
-        # Main RAG collection — named vectors: "dense" (bge-large-en-v1.5,
-        # 1024-dim) + "sparse" (FastEmbed's Qdrant/bm25 export), fused via
-        # RRF at query time (see search_hybrid below). Size 1024 matches
-        # the FastEmbed substitute for bge-m3 (see config.py comment —
-        # bge-m3 isn't in FastEmbed's supported model set).
         if settings.QDRANT_COLLECTION not in existing:
             await self.client.create_collection(
                 collection_name=settings.QDRANT_COLLECTION,
                 vectors_config={"dense": models.VectorParams(size=1024, distance=models.Distance.COSINE)},
                 sparse_vectors_config={"sparse": models.SparseVectorParams()},
-            )
-
-        # Semantic cache collection — untouched, Phase 5 (Redis Stack)
-        # replaces this entirely per the locked design; left as-is so
-        # Phase 5 owns the removal, not silently changed here.
-        if "semantic_cache" not in existing:
-            await self.client.create_collection(
-                collection_name="semantic_cache",
-                vectors_config=models.VectorParams(size=768, distance=models.Distance.COSINE),
             )
 
         self._collections_ready = True
@@ -58,9 +41,17 @@ class VectorDBClient:
         limit: int = 10,
         rrf_k: int = 60,
     ):
-        """
-        Dense + BM25 sparse, fused via Qdrant's native RRF (Query API
-        prefetch + fusion), filtered to one corpus_id — never cross-tenant.
+        """Searches dense and sparse vectors in parallel, fused with RRF, filtered to one corpus_id.
+
+        Args:
+            dense_vector: Query embedding for the dense index.
+            sparse_vector: Query sparse vector, as {"indices": [...], "values": [...]}.
+            corpus_id: Restricts results to this corpus only.
+            limit: Max results to return.
+            rrf_k: Not currently forwarded into the fusion query — Qdrant uses its own default.
+
+        Returns:
+            The matching points, with payload.
         """
         await self.init_collections()
         response = await self.client.query_points(
@@ -82,17 +73,17 @@ class VectorDBClient:
         )
         return response.points
 
-    async def search_dense(
-        self,
-        dense_vector: list[float],
-        corpus_id: str,
-        limit: int = 10,
-    ):
-        """Dense-only search — no sparse branch, no RRF fusion. Not used
-        by production retrieval (search_hybrid is); exists for the eval 
-        harness's retrieval ablation (dense-only vs BM25-only vs hybrid 
-        vs hybrid+rerank), which needs each component's own ranking to 
-        isolate its contribution, not just the already-fused result."""
+    async def search_dense(self, dense_vector: list[float], corpus_id: str, limit: int = 10):
+        """Dense-only search — used by the evaluation harness's retrieval ablation.
+
+        Args:
+            dense_vector: Query embedding.
+            corpus_id: Restricts results to this corpus only.
+            limit: Max results to return.
+
+        Returns:
+            The matching points, with payload.
+        """
         await self.init_collections()
         response = await self.client.query_points(
             collection_name=settings.QDRANT_COLLECTION,
@@ -106,13 +97,17 @@ class VectorDBClient:
         )
         return response.points
 
-    async def search_sparse(
-        self,
-        sparse_vector: dict,
-        corpus_id: str,
-        limit: int = 10,
-    ):
-        """BM25-only search — same ablation use case as search_dense above."""
+    async def search_sparse(self, sparse_vector: dict, corpus_id: str, limit: int = 10):
+        """BM25-only search — same evaluation-ablation use case as search_dense.
+
+        Args:
+            sparse_vector: Query sparse vector, as {"indices": [...], "values": [...]}.
+            corpus_id: Restricts results to this corpus only.
+            limit: Max results to return.
+
+        Returns:
+            The matching points, with payload.
+        """
         await self.init_collections()
         response = await self.client.query_points(
             collection_name=settings.QDRANT_COLLECTION,
@@ -126,30 +121,12 @@ class VectorDBClient:
         )
         return response.points
 
-    # search method for semantic cache searches
-    async def search_collection(
-        self,
-        collection_name: str,
-        query_vector: list[float],
-        limit: int = 1,
-        score_threshold: float = 0.95
-    ):
-        await self.init_collections()
-        response = await self.client.query_points(
-            collection_name=collection_name,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-            score_threshold=score_threshold
-        )
-        return response.points
-
     async def delete_by_corpus_id(self, corpus_id: str) -> None:
-        """Cascade-delete hook for session expiry (session/cleanup.py) —
-        the consumer for the cross-store cleanup System-design.md and
-        session/store.py's ZSET-not-native-TTL choice were both explicitly
-        designed around ("purge_expired() returns purged ids... giving a
-        place to hook cross-store cascade deletes")."""
+        """Deletes every point tagged with the given corpus_id.
+
+        Args:
+            corpus_id: The corpus whose points should be removed.
+        """
         await self.init_collections()
         await self.client.delete(
             collection_name=settings.QDRANT_COLLECTION,
@@ -161,7 +138,8 @@ class VectorDBClient:
         )
 
     async def close(self):
+        """Closes the Qdrant connection."""
         await self.client.close()
 
-# Global instance
+
 qdrant_client = VectorDBClient()
