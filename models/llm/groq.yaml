@@ -1,0 +1,21 @@
+# Reference only — not loaded by the app at runtime. Source of truth: .env / config.py.
+
+# Groq backend — primary API backend by default (LLM_BACKEND=api, API_PRIMARY=groq).
+# Auto-failover pair with OpenRouter; round-robin dispatch across these models.
+models:
+  - id: openai/gpt-oss-120b
+    rpm: 30
+    rpd: 1000
+    tpm: 8000
+    tpd: 200000
+  - id: qwen/qwen3.8-27b
+    rpm: 30
+    rpd: 1000
+    tpm: 8000
+    tpd: 200000
+  - id: openai/gpt-oss-20b
+    rpm: 30
+    rpd: 1000
+    tpm: 8000
+    tpd: 200000
+base_url: https://api.groq.com/openai/v1

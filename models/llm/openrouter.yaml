@@ -1,0 +1,16 @@
+# Reference only — not loaded by the app at runtime. Source of truth: .env / config.py.
+
+
+# OpenRouter backend — automatic backup to Groq (or primary, if API_PRIMARY=openrouter).
+# Account-level quota shared across every model below, not per-model.
+models:
+  - openrouter/free
+  - nvidia/nemotron-3-ultra-550b-a55b:free
+  - minimax/minimax-m3:free
+  - z-ai/glm-5.2:free
+  - google/gemma-4-31b-it:free
+  - openai/gpt-oss-120b:free
+base_url: https://openrouter.ai/api/v1
+rate_limit:
+  rpm: 20
+  rpd: 50

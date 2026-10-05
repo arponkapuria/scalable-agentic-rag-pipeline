@@ -1,0 +1,14 @@
+# Reference only — not loaded by the app at runtime. Source of truth: .env / config.py.
+
+
+# vLLM backend — manual-select only, two variants.
+metal:
+  # Local, via vllm-metal on Apple Silicon (LLM_BACKEND=vllm_local).
+  models:
+    - Qwen/Qwen2.5-3B-Instruct-AWQ
+  base_url: http://localhost:8001
+modal:
+  # Cloud GPU via Modal, within the $30/mo free credit (LLM_BACKEND=vllm_modal).
+  models:
+    - Qwen/Qwen2.5-7B-Instruct-AWQ
+    - meta-llama/Meta-Llama-3-70B-Instruct-AWQ

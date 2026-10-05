@@ -1,0 +1,8 @@
+# Reference only — not loaded by the app at runtime. Source of truth: .env / config.py.
+
+
+# Ollama backend — local, offline, $0. Manual-select only (LLM_BACKEND=ollama).
+models:
+  - llama3.2:3b
+  - qwen2.5:3b
+base_url: http://localhost:11434

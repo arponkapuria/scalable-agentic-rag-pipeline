@@ -1,0 +1,6 @@
+# Reference only — not loaded by the app at runtime. Source of truth: .env / config.py.
+
+
+# Cross-encoder reranker — FastEmbed, ONNX/CPU, $0. Slots in after RRF fusion of dense + sparse search results.
+model_id: BAAI/bge-reranker-base
+cache_dir: ~/.cache/fastembed
