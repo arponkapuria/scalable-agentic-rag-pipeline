@@ -4,8 +4,6 @@ This documents the baseline evaluation I ran on the shipped pipeline: what it me
 
 Every command is resumable. If a run stops (daily rate limit, crash, closed terminal), running the same command again continues from the first unfinished question. Finished work is not redone and no API call is paid for twice.
 
-All commands were run from the repo root, on the `trim-rebuild` branch.
-
 ---
 
 ## Design

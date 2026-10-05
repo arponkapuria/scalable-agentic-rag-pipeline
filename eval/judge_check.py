@@ -1,11 +1,6 @@
-"""
-Human-in-the-loop checkpoint (EVALUATION_DESIGN.md): before Run 5/6 (the
-real judge sweep), run every ragas metric ONCE against a single
-already-generated question and print the raw scores — confirms Gemma's
-json_mode output actually validates against ragas's own pydantic
-response models (GemmaInstructorLLM.agenerate does
-response_model.model_validate_json(raw) with zero retry/repair) before
-spending the full ~325-call budget on a schema mismatch.
+"""Smoke test that scores one question with all six metrics before the full judge sweep.
+
+It confirms the judge's JSON output validates against ragas's response models, and warns about any metric that comes back null.
 """
 import asyncio
 import json
@@ -20,6 +15,11 @@ from eval.run_judge import CONTEXT_PRECISION_TOP_K, _CLIENTS, _LLMS, _score, bui
 logger = logging.getLogger(__name__)
 
 async def main(backend: str = "gemma") -> None:
+    """Scores the first question that has both shipped and closed-book answers and prints the results.
+
+    Args:
+        backend: Judge backend name, "gemma" or "cohere".
+    """
     data = storage.load(eval_config.DATASET_PATH)
     questions = data["questions"]
 

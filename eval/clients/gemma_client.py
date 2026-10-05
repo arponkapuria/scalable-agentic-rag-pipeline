@@ -1,40 +1,26 @@
-"""
-Judge-only Gemma client — Google's OpenAI-compatible
-endpoint, same OpenAICompatibleClient base every other backend
-(Groq/OpenRouter/Ollama/vLLM/Mistral) already uses. Lives under eval/, not
-services/api/app/clients/llm/ alongside the production clients: this is
-never part of the chat app's dependency graph or lifespan — only eval
-scripts start/stop it. Same isolation reasoning as MistralClient
-(captioning): the judge must not share a vendor with either the generator
-(Groq) or the captioner (Mistral), and must not compete with either for
-its own rate-limit budget.
+"""Gemma judge client for the eval scripts, using Google's OpenAI-compatible API.
 
-Limits from the project owner's Google AI Studio console (gemma-4-31b-it):
-30 RPM / 16K TPM / 14,400 RPD — comfortably covers the ~275-call judge
-budget EVALUATION_DESIGN.md sizes this run at (finishes in minutes, not
-hours). Re-verify at aistudio.google.com if behavior looks off, same
-caveat as every other free-tier client in this project.
+It lives under eval/ because only eval scripts use it, and it stays a separate vendor from the generator and captioner.
 """
 from services.api.app.clients.llm.openai_compatible import OpenAICompatibleClient
 from services.api.app.config import settings
 from libs.utils.rate_limiter import BackendRateLimiter
 
+# Limits for gemma-4-31b-it from Google AI Studio.
 _GEMMA_RPM = 30
 _GEMMA_TPM = 16_000
 _GEMMA_RPD = 14_400
 
 
 def _build_gemma_rate_limiter() -> BackendRateLimiter:
+    """Builds a rate limiter for the Gemma judge model."""
     limiter = BackendRateLimiter(shared=False)
     limiter.register(settings.GEMMA_JUDGE_MODEL, rpm=_GEMMA_RPM, tpm=_GEMMA_TPM, rpd=_GEMMA_RPD)
     return limiter
 
 
 class GemmaClient(OpenAICompatibleClient):
-    """Single-model judge client — no failover, no fallback backend. A
-    judge call failing just leaves that metric null for the question
-    (see run_judge.py) rather than silently falling over to a different
-    judge model, which would make scores incomparable across questions."""
+    """Single-model Gemma client with no failover, so a failed call leaves the metric null instead of switching judges."""
 
     def __init__(self):
         super().__init__(
@@ -46,8 +32,5 @@ class GemmaClient(OpenAICompatibleClient):
         )
 
 
-# Global instance — started/closed by whichever eval script needs it
-# (run_judge.py, judge_check.py), same lifecycle pattern as the app's own
-# llm_client/mistral_client globals, just not wired into main.py's
-# lifespan since this never runs inside the live app process.
+# Shared instance that eval scripts start and close themselves.
 gemma_client = GemmaClient()

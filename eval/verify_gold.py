@@ -1,17 +1,6 @@
-"""
-Human-in-the-loop checkpoint (EVALUATION_DESIGN.md): after Run 1 (ingest),
-before Run 2 (retrieve) — confirms every question's gold_span was
-actually found in SOME indexed chunk for the eval corpus. A wrong or
-missing gold span silently breaks Hit@5/MRR/Precision@5 for that question
-forever (it scores 0 not because retrieval failed, but because the
-ground truth never matched anything) — this has to run before spending
-any retrieval/generation calls on a broken question.
+"""Checks that every answerable question's gold span appears in an indexed chunk.
 
-Reads straight from Qdrant (every indexed chunk for EVAL_CORPUS_ID, via
-scroll), not the ingestion debug dump — with 5 papers sharing one eval
-corpus_id, the debug dump (logs/ingest_debug/{corpus_id}/chunks.json)
-gets overwritten by each paper in turn, so only the last paper's chunks
-would survive there. Qdrant itself has everything.
+Run after ingestion and before retrieval, since a missing span would score that question 0 for the wrong reason.
 """
 import asyncio
 import logging
@@ -29,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _load_all_chunk_texts() -> list[str]:
+    """Returns the text of every chunk indexed for the eval corpus, read straight from Qdrant."""
     await qdrant_client.init_collections()
     texts: list[str] = []
     next_offset = None
@@ -51,6 +41,7 @@ async def _load_all_chunk_texts() -> list[str]:
 
 
 async def main() -> None:
+    """Prints OK, or lists the question ids whose gold span is missing from every chunk."""
     data = storage.load(eval_config.DATASET_PATH)
     questions = data["questions"]
     chunk_texts = [normalize_text(t) for t in await _load_all_chunk_texts()]
@@ -64,7 +55,7 @@ async def main() -> None:
     for q in questions:
         gold_span = q.get("gold_span")
         if not gold_span:
-            continue  # unanswerable questions have no gold span by design
+            continue  # Unanswerable questions have no gold span.
         needle = normalize_text(gold_span)
         if not any(needle in text for text in chunk_texts):
             missing.append(q["id"])

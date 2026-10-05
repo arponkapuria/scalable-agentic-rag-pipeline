@@ -1,23 +1,6 @@
-"""
-Run 3 — shipped-pipeline answer per question, via the REAL agent graph
-(agents/graph.py's compiled agent_app) — the same planner -> retriever/
-tool -> responder path production chat traffic takes, invoked directly
-instead of through chat.py's cache/session/streaming wrapper (eval wants
-a fresh generation every time, not a cache hit, and there's no real
-browser session to key a cookie off of).
+"""Generates answers for every question, either through the real agent graph or as a closed-book baseline.
 
-Run 4 (--closed-book) — same question, no retrieval, a plain "answer from
-your own knowledge" prompt straight to llm_client. Isolates what the
-corpus/retrieval actually contributes, per EVALUATION_DESIGN.md's
-Baseline row. Deliberately NOT reusing responder.py's
-_answer_conversationally — that path exists for chitchat/tool-narration,
-not for a from-model-knowledge factual answer, and its prompt doesn't ask
-the model to actually attempt one.
-
-Both are gated on backend exhaustion: if llm_client raises
-ModelExhaustedError (Groq's whole day used up), the run stops cleanly —
-whatever's already saved stays saved, and re-running this command after
-the daily reset just continues from the first unanswered question.
+Stops cleanly when the LLM backend is exhausted, and a rerun continues from the first unanswered question.
 """
 import argparse
 import asyncio
@@ -42,14 +25,13 @@ CLOSED_BOOK_SYSTEM_PROMPT = (
 
 
 async def _generate_shipped(question: dict) -> None:
+    """Answers one question with the production agent graph and saves it under "shipped"."""
     qid = question["id"]
     if storage.has_keys("generation", eval_config.RESULTS_DIR, qid, ["shipped"]):
         logger.info(f"[generate:{qid}] shipped answer already present — skipping")
         return
 
-    # Mirrors chat.py's initial_state exactly (messages=[] — single-turn,
-    # no prior history, matching each eval question being independent)
-    # so this is genuinely the production graph, not a reimplementation.
+    # Same initial state the chat route builds, with no history since each question is independent.
     state = AgentState(
         messages=[],
         current_query=question["question"],
@@ -85,6 +67,7 @@ async def _generate_shipped(question: dict) -> None:
 
 
 async def _generate_closed_book(question: dict) -> None:
+    """Answers one question from the model's own knowledge with no retrieval and saves it under "closed_book"."""
     qid = question["id"]
     if storage.has_keys("generation", eval_config.RESULTS_DIR, qid, ["closed_book"]):
         logger.info(f"[generate:{qid}] closed-book answer already present — skipping")
@@ -111,6 +94,11 @@ async def _generate_closed_book(question: dict) -> None:
 
 
 async def run(closed_book: bool) -> None:
+    """Generates answers for all questions, stopping early if the backend runs out of quota.
+
+    Args:
+        closed_book: If True, runs the no-retrieval baseline instead of the shipped pipeline.
+    """
     data = storage.load(eval_config.DATASET_PATH)
     questions = data["questions"]
     await llm_client.start()
@@ -131,6 +119,7 @@ async def run(closed_book: bool) -> None:
 
 
 def main():
+    """Standalone entrypoint that mirrors `python -m eval.cli generate`."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--closed-book", action="store_true")
     args = parser.parse_args()

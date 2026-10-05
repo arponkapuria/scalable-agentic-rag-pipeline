@@ -1,47 +1,7 @@
-"""
-Run 5 (--retrieval) and Run 6 (--generation) — the 6 metrics from
-EVALUATION_DESIGN.md's table, computed by ragas's REAL metric
-implementations (ragas.metrics.collections), pointed at:
-  - llm: GemmaInstructorLLM (eval/judges/ragas_llm.py) — Gemma, free
-    tier, a different vendor from both the generator (Groq) and the
-    captioner (Mistral), same isolation reasoning used elsewhere in this
-    project.
-  - embeddings: FastEmbedRagasEmbedding (eval/judges/ragas_embeddings.py)
-    — the app's own local FastEmbed model, zero API cost, for
-    AnswerRelevancy's and AnswerCorrectness's semantic-similarity steps.
+"""Scores saved results with ragas metrics using an LLM judge (Gemma or Cohere) and local embeddings.
 
-Real per-question call count — verified by reading AND running ragas's
-actual ascore() implementations (see chat history for the
-reproduction), not assumed:
-
-  context_precision   up to 3 calls  ContextPrecisionWithoutReference makes
-                       1 call PER context in retrieved_contexts — we
-                       deliberately cap that list to the top 3 of
-                       hybrid_rerank to hit this budget, rather than
-                       accepting ragas's default of scoring all 5.
-  context_recall      1 call         ContextRecall makes exactly 1 call
-                       regardless of context count (it joins them into
-                       one string), so this uses the FULL hybrid_rerank
-                       list for a better recall signal.
-  faithfulness         up to 2 calls  Faithfulness: extract statements from
-                       the answer, then verify each against context — 0
-                       if no statements were extracted (e.g. a refusal).
-  answer_relevancy    exactly 1 call  AnswerRelevancy(strictness=1) —
-                       ragas's own default is strictness=3 (3 synthetic
-                       questions); capped to 1 here.
-                       + 2 local FastEmbed calls, zero API cost.
-  answer_correctness  up to 3 calls  AnswerCorrectness: generate statements
-  (shipped)             from the response, generate statements from the
-                       reference, classify (skipped if either statement
-                       list came back empty) + local embed calls.
-  answer_correctness  up to 3 calls  same metric instance, invoked again
-  (closed-book)          on the closed-book answer (EVALUATION_DESIGN.md's
-                       Baseline row).
-
-  = up to 13 Gemma calls/question x 25 questions = up to 325 total,
-  comfortably inside Gemma's 14,400/day free cap. This is ragas's real
-  call shape for the knobs we control (context truncation, strictness),
-  not a number picked to hit a target — see eval/RUNBOOK.md.
+Retrieval mode scores context precision and recall, and generation mode scores faithfulness, relevancy and correctness.
+Unanswerable questions get a custom refusal check instead, failed metrics are saved as None, and reruns only fill in what is missing.
 """
 import argparse
 import asyncio
@@ -49,7 +9,7 @@ import logging
 import math
 from pydantic import BaseModel
 
-from eval import _ragas_compat  # noqa: F401 — import-order fix, see that module
+from eval import _ragas_compat  # noqa: F401 — must load before ragas
 from ragas.metrics.collections import (
     AnswerCorrectness,
     AnswerRelevancy,
@@ -71,7 +31,8 @@ logger = logging.getLogger(__name__)
 _CLIENTS = {"gemma": gemma_client, "cohere": cohere_client}
 _LLMS = {"gemma": gemma_instructor_llm, "cohere": cohere_instructor_llm}
 
-CONTEXT_PRECISION_TOP_K = 3  # budget cap — see module docstring
+# Only the top 3 chunks are scored for context precision to limit judge calls.
+CONTEXT_PRECISION_TOP_K = 3
 
 REFUSAL_JUDGE_PROMPT = """You are evaluating whether a candidate answer correctly handles an
 UNANSWERABLE question in a closed document corpus.
@@ -100,9 +61,15 @@ Output JSON only: {{"correct": true or false}}
 """
 
 class _RefusalVerdict(BaseModel):
+    """Structured verdict returned by the refusal judge."""
     correct: bool
 
 async def _judge_refusal(question_text: str, reference: str, answer: str, llm) -> bool | None:
+    """Asks the judge whether an answer correctly admits the question can't be answered from the corpus.
+
+    Returns:
+        True or False for the verdict, or None if the answer is empty or the call failed.
+    """
     if not answer:
         return None
     try:
@@ -116,6 +83,11 @@ async def _judge_refusal(question_text: str, reference: str, answer: str, llm) -
         return None
 
 def build_metrics(backend: str) -> dict:
+    """Builds the ragas metric objects wired to the chosen judge backend.
+
+    Args:
+        backend: Judge backend name, "gemma" or "cohere".
+    """
     llm = _LLMS[backend]
     return {
         "faithfulness": Faithfulness(llm=llm),
@@ -126,10 +98,7 @@ def build_metrics(backend: str) -> dict:
     }
 
 def _clean(value) -> float | None:
-    """ragas's own "couldn't score this" signal is NaN (e.g. zero
-    statements extracted) — convert to None so report.py's
-    None-skipping average logic treats it as missing rather than
-    propagating NaN through a sum()."""
+    """Converts a ragas score to a float, mapping None and NaN to None so averages skip them."""
     if value is None:
         return None
     try:
@@ -139,6 +108,13 @@ def _clean(value) -> float | None:
 
 
 async def _score(metric, label: str, **kwargs) -> float | None:
+    """Runs one ragas metric and returns its score, or None if the call fails.
+
+    Args:
+        metric: The ragas metric to run.
+        label: Name used in the warning log if the call fails.
+        **kwargs: Inputs passed to the metric's ascore().
+    """
     try:
         result = await metric.ascore(**kwargs)
         return _clean(result.value)
@@ -148,6 +124,7 @@ async def _score(metric, label: str, **kwargs) -> float | None:
 
 
 async def _judge_retrieval_one(question: dict, metrics: dict) -> None:
+    """Scores context precision and recall for one answerable question and saves them."""
     qid = question["id"]
     if storage.has_keys("judge", eval_config.RESULTS_DIR, qid, ["context_precision", "context_recall"]):
         logger.info(f"[judge:{qid}] retrieval metrics already present — skipping")
@@ -183,6 +160,10 @@ async def _judge_retrieval_one(question: dict, metrics: dict) -> None:
 
 
 async def _judge_generation_one(question: dict, metrics: dict, llm) -> None:
+    """Scores the generated answers for one question and saves the results.
+
+    Answerable questions get faithfulness, relevancy and correctness, and unanswerable ones get refusal verdicts.
+    """
     qid = question["id"]
     keys = ["faithfulness", "answer_relevancy", "answer_correctness", "answer_correctness_closed_book"]
     if not question.get("answerable"):
@@ -200,8 +181,7 @@ async def _judge_generation_one(question: dict, metrics: dict, llm) -> None:
     reference = question.get("reference_answer", "")
     question_text = question["question"]
 
-    # Per-metric resume: reuse any score already saved, so only missing
-    # metrics cost API calls.
+    # Reuse scores already saved so only missing metrics cost judge calls.
     done = storage.load(storage.question_path("judge", eval_config.RESULTS_DIR, qid))
 
     faithfulness = done.get("faithfulness")
@@ -254,6 +234,12 @@ async def _judge_generation_one(question: dict, metrics: dict, llm) -> None:
 
 
 async def run(stage: str, backend: str = "gemma") -> None:
+    """Judges every question for one stage.
+
+    Args:
+        stage: "retrieval" or "generation".
+        backend: Judge backend name, "gemma" or "cohere".
+    """
     data = storage.load(eval_config.DATASET_PATH)
     questions = data["questions"]
     metrics = build_metrics(backend)
@@ -270,6 +256,7 @@ async def run(stage: str, backend: str = "gemma") -> None:
 
 
 def main():
+    """Standalone entrypoint that mirrors `python -m eval.cli judge`."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--retrieval", action="store_true")
     parser.add_argument("--generation", action="store_true")

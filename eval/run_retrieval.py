@@ -1,18 +1,11 @@
-"""
-Run 2 — 4-way retrieval ablation per question: dense-only, BM25-only,
-hybrid (RRF-fused), hybrid+rerank. The last is exactly what the shipped
-pipeline (retriever.py) hands the responder — everything else exists
-purely to isolate each retrieval component's own contribution, per
-EVALUATION_DESIGN.md's ablation row.
+"""Retrieves chunks for every question with four variants: dense, BM25, hybrid, and hybrid with rerank.
 
-Resumable: skips any variant already saved for a question. Zero LLM
-calls — pure Qdrant + local FastEmbed + local reranker, so re-running
-this costs nothing but wall-clock time (a few seconds per question).
+Makes no LLM calls and skips questions that already have all four variants saved.
 """
 import asyncio
 import logging
 
-from models.embeddings.fastembed_client import fastembed_client
+from services.api.app.clients.fastembed_client import fastembed_client
 from services.api.app.clients.embedding import embedding_client
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.reranker import reranker_client
@@ -27,6 +20,7 @@ VARIANTS = ("dense_only", "bm25_only", "hybrid", "hybrid_rerank")
 
 
 def _point_to_dict(point, score: float) -> dict:
+    """Converts a Qdrant point into a plain dict with text, filename, page and score."""
     payload = getattr(point, "payload", None) or {}
     return {
         "text": payload.get("text", ""),
@@ -37,6 +31,7 @@ def _point_to_dict(point, score: float) -> dict:
 
 
 async def _retrieve_one(question: dict) -> dict:
+    """Runs all four retrieval variants for one question, saves them, and returns the saved data."""
     qid = question["id"]
     query = question["question"]
 
@@ -63,6 +58,7 @@ async def _retrieve_one(question: dict) -> dict:
     bm25_only = [_point_to_dict(p, p.score) for p in sparse_points]
     hybrid = [_point_to_dict(p, p.score) for p in hybrid_points]
 
+    # Rerank the hybrid results and keep the top N, matching the production pipeline.
     hybrid_rerank: list[dict] = []
     if hybrid:
         texts = [d["text"] for d in hybrid]
@@ -86,6 +82,7 @@ async def _retrieve_one(question: dict) -> dict:
 
 
 async def run() -> None:
+    """Runs the retrieval ablation for every question in the dataset."""
     data = storage.load(eval_config.DATASET_PATH)
     questions = data["questions"]
     for q in questions:

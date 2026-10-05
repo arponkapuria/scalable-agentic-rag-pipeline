@@ -1,22 +1,6 @@
-"""
-Run 1 — downloads the 5 fixed arXiv papers, uploads each to MinIO/S3 at
-the same uploads/{corpus_id}/{file_id}.ext key layout upload.py uses for a
-real browser upload, then calls run_ingestion() directly (awaited, not as
-a FastAPI BackgroundTask) — the exact same production ingestion path
-(Docling parse/chunk -> embed -> index -> corpus_version bump), just
-triggered from a script instead of a MinIO webhook. No ingestion code is
-duplicated or reimplemented for eval.
+"""Downloads the five eval papers and ingests them through the production ingestion pipeline.
 
-Resumable per-paper: a paper already at status="complete" in the
-Document table for EVAL_CORPUS_ID is skipped, so a partial run (e.g. one
-paper hit a Mistral captioning issue mid-document) can just be re-run and
-only the unfinished papers redo work.
-
-Note: ingestion's own debug dump (INGEST_DEBUG_DUMP, chunks.json) writes
-to a fixed logs/ingest_debug/{corpus_id}/chunks.json path per corpus_id,
-overwritten on each paper — with 5 papers sharing one eval corpus_id,
-only the LAST paper's dump survives. verify_gold.py therefore reads
-straight from Qdrant (every paper's indexed chunks), not this dump.
+Resumable per paper: papers already marked complete for the eval corpus are skipped.
 """
 import asyncio
 import logging
@@ -37,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _download(url: str) -> bytes:
+    """Downloads a file and returns its bytes."""
     async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
         response = await client.get(url)
         response.raise_for_status()
@@ -44,11 +29,13 @@ async def _download(url: str) -> bytes:
 
 
 async def _already_complete(corpus_id: str, filename: str) -> bool:
+    """Returns True if this file is already fully ingested for the corpus."""
     docs = await document_store.list_by_corpus_id(corpus_id)
     return any(d.filename == filename and d.status == "complete" for d in docs)
 
 
 async def _ingest_paper(paper: dict) -> None:
+    """Downloads one paper, uploads it to S3, and runs production ingestion on it."""
     corpus_id = eval_config.EVAL_CORPUS_ID
     if await _already_complete(corpus_id, paper["filename"]):
         logger.info(f"[ingest-corpus] {paper['filename']} already complete — skipping")
@@ -76,13 +63,12 @@ async def _ingest_paper(paper: dict) -> None:
 
 
 async def run() -> None:
-    # Document table needs to exist — main.py's lifespan normally creates
-    # it; this script runs standalone (no live API server needed), so it
-    # does the same create_all() here.
+    """Creates the tables if missing, then ingests every paper in the eval config."""
+    # The API server normally creates the tables, but this script runs without it.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    await mistral_client.start()  # ingestion's figure captioning needs this
+    await mistral_client.start()  # Needed for figure captioning during ingestion.
     try:
         for paper in eval_config.PAPERS:
             await _ingest_paper(paper)

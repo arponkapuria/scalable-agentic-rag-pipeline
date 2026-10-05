@@ -1,4 +1,4 @@
-# OmniRAG Phase 9a — Baseline Evaluation Report
+# DocRAG — Baseline Evaluation Report
 
 Questions: 25/25 answered; judge metrics: 126/126 values recorded (answerable questions only, n=21).
 

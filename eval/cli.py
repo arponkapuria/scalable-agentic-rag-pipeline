@@ -1,18 +1,13 @@
-"""
-Single entrypoint for every eval run, per EVALUATION_DESIGN.md's "each is
-its own CLI command, resumable on its own":
+"""Single command-line entrypoint for all eval stages, run from the repo root.
 
-  python -m eval.cli ingest
-  python -m eval.cli verify-gold
-  python -m eval.cli retrieve
-  python -m eval.cli generate [--closed-book]
-  python -m eval.cli judge-check
-  python -m eval.cli judge (--retrieval | --generation)
-  python -m eval.cli report
-
-Run from the repo root (needs services/, pipelines/, libs/, models/, eval/
-all importable — same PYTHONPATH assumption as every other standalone
-script in scripts/).
+Usage:
+    python -m eval.cli ingest
+    python -m eval.cli verify-gold
+    python -m eval.cli retrieve
+    python -m eval.cli generate [--closed-book]
+    python -m eval.cli judge-check [--judge-backend {gemma,cohere}]
+    python -m eval.cli judge (--retrieval | --generation) [--judge-backend {gemma,cohere}]
+    python -m eval.cli report
 """
 import argparse
 import asyncio
@@ -20,6 +15,7 @@ import logging
 
 
 def main():
+    """Parses the subcommand and runs the matching eval stage."""
     parser = argparse.ArgumentParser(prog="python -m eval.cli")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -43,6 +39,7 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+    # Stage modules are imported lazily so each command only loads what it needs.
     if args.command == "ingest":
         from eval import ingest_corpus
         asyncio.run(ingest_corpus.run())

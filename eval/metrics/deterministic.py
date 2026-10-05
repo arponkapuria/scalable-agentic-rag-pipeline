@@ -1,36 +1,40 @@
-"""
-Deterministic (no-LLM, zero-cost) metrics — computed directly from saved
-retrieval/generation files at report time, per EVALUATION_DESIGN.md's
-"Scored by: Deterministic" rows. Gold-chunk matching is substring
-containment of the question's `gold_span` (a short, human-verified phrase
-expected verbatim in the true chunk) against a retrieved chunk's text,
-normalized for whitespace/case — there's no stable chunk id stored in
-Qdrant (ingestion's payload is text/filename/page/section/corpus_id only),
-so this is the practical alternative that needs no ingestion-side schema
-change.
+"""Deterministic metrics computed without any LLM calls.
+
+Retrieval metrics match each question's gold span against chunk text, and generation metrics detect refusals and check citations.
 """
 import re
 
 
 def normalize_text(text: str) -> str:
+    """Lowercases text and collapses all whitespace to single spaces."""
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
 def _is_gold_hit(chunk_text: str, gold_span: str) -> bool:
+    """Returns True if the gold span appears in the chunk after normalization."""
     if not gold_span:
         return False
     return normalize_text(gold_span) in normalize_text(chunk_text)
 
 
 def hit_at_k(chunks: list[dict], gold_span: str, k: int) -> float | None:
-    """None (not 0) for unanswerable questions — there IS no gold chunk,
-    so "did we hit it" is a category error, not a failed retrieval."""
+    """Returns 1.0 if the gold chunk is in the top k, else 0.0.
+
+    Args:
+        chunks: Retrieved chunks in rank order, each with a "text" key.
+        gold_span: Expected phrase, empty for unanswerable questions.
+        k: Number of top chunks to check.
+
+    Returns:
+        The score, or None for unanswerable questions since there is no gold chunk.
+    """
     if not gold_span:
         return None
     return 1.0 if any(_is_gold_hit(c["text"], gold_span) for c in chunks[:k]) else 0.0
 
 
 def mrr(chunks: list[dict], gold_span: str) -> float | None:
+    """Returns the reciprocal rank of the first gold chunk, 0.0 if absent, or None if there is no gold span."""
     if not gold_span:
         return None
     for i, c in enumerate(chunks, start=1):
@@ -40,12 +44,7 @@ def mrr(chunks: list[dict], gold_span: str) -> float | None:
 
 
 def precision_at_k(chunks: list[dict], gold_span: str, k: int) -> float | None:
-    """Fraction of the top-k retrieved chunks that ARE the gold chunk.
-    With a single gold span per question (not a full labeled relevant
-    set), this collapses to hit@k / k — the honest number for a
-    single-gold-chunk dataset, rather than inventing a broader relevance
-    judgment this metric wasn't designed to need (that's what Context
-    Precision, the Gemma-judged metric, is for)."""
+    """Returns the fraction of the top k chunks containing the gold span, or None if there is no gold span."""
     if not gold_span:
         return None
     top_k = chunks[:k]
@@ -57,6 +56,7 @@ def precision_at_k(chunks: list[dict], gold_span: str, k: int) -> float | None:
 
 _SUBJ = r"(?:paper|papers|authors?|documents?|corpus|study|article|text)"
 
+# Phrases that signal the answer is declining to answer.
 REFUSAL_PATTERNS = (
     r"\bi (?:do not|don'?t) have (?:that |any |enough |reliable |specific )?information\b",
     r"\bi (?:do not|don'?t) know\b",
@@ -71,16 +71,21 @@ REFUSAL_PATTERNS = (
 _COMPILED_REFUSAL_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in REFUSAL_PATTERNS)
 
 def is_refusal_shaped(answer: str) -> bool:
+    """Returns True if the answer reads like a refusal or an admission of not knowing."""
     normalized = normalize_text(answer).replace("\u2019", "'")
     return any(p.search(normalized) for p in _COMPILED_REFUSAL_PATTERNS)
 
 
 def citation_validity(answer: str, sources: list[str]) -> float | None:
-    """Fraction of '[Source: X]' citations in the answer whose X is
-    actually among the sources this generation run retrieved. None (not
-    0/1) when the answer cites nothing at all — an uncited answer isn't a
-    citation-validity failure, it's a different question (often a
-    refusal, where citing nothing is correct)."""
+    """Returns the fraction of "[Source: X]" citations that match a retrieved source.
+
+    Args:
+        answer: The generated answer text.
+        sources: Source names retrieved for this answer.
+
+    Returns:
+        The fraction, or None if the answer has no citations.
+    """
     cited = re.findall(r"\[Source:\s*([^\]]+)\]", answer or "")
     if not cited:
         return None

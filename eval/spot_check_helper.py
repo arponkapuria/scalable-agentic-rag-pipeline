@@ -1,10 +1,10 @@
-"""One-off: prints 6 answers (2 highest/2 lowest/2 median Cohere answer_correctness) 
-to hand-score against report.md's spot-check table."""
+"""One-off script that prints six answers (lowest, median and highest correctness) for manual spot-checking against the report."""
 
 import json
 from eval import config as eval_config
 from eval import storage
 
+# Answerable questions only, keyed by id.
 questions = {q["id"]: q for q in storage.load(eval_config.DATASET_PATH)["questions"] if q.get("answerable")}
 scored = []
 for qid, q in questions.items():
@@ -12,6 +12,7 @@ for qid, q in questions.items():
     if judge.get("answer_correctness") is not None:
         scored.append((qid, judge["answer_correctness"]))
 scored.sort(key=lambda x: x[1])
+# Two lowest, two around the median, two highest.
 picks = scored[:2] + scored[len(scored)//2-1:len(scored)//2+1] + scored[-2:]
 
 for qid, cohere_score in picks:

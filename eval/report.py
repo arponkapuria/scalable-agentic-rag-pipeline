@@ -1,13 +1,6 @@
-"""
-Run 7 — aggregates every saved retrieval/generation/judge file into one
-report. Reads only what earlier runs already saved (zero calls, zero
-cost) — safe to re-run any time, e.g. after filling in more questions.
+"""Aggregates saved retrieval, generation and judge results into a markdown report.
 
-Null metrics (a judge call that never succeeded, or a question a later
-run hasn't reached yet) are reported as "n/a" via _avg's None-skipping,
-never silently treated as 0 — the questions_total/answered counts at the
-top of the report are what make an incomplete run visible instead of
-looking like a clean 25/25.
+It makes no API calls, shows missing metrics as n/a instead of 0, and is safe to rerun at any time.
 """
 import logging
 
@@ -25,11 +18,13 @@ JUDGE_KEYS = (
 
 
 def _avg(values: list) -> float | None:
+    """Returns the mean of the non-None values rounded to 3 places, or None if there are none."""
     clean = [v for v in values if v is not None]
     return round(sum(clean) / len(clean), 3) if clean else None
 
 
 def _percentile(values: list, pct: float) -> float | None:
+    """Returns the value at the given percentile (0 to 1) among non-None values, or None if there are none."""
     clean = sorted(v for v in values if v is not None)
     if not clean:
         return None
@@ -38,8 +33,7 @@ def _percentile(values: list, pct: float) -> float | None:
 
 
 def _blend(mean_answerable, n_answerable, refusal_rate, n_unanswerable):
-    """Weighted average over ALL questions: answerable ones contribute their
-    judge score, unanswerable ones their pass/fail refusal — label as a blend."""
+    """Combines the answerable mean score and the refusal rate into one weighted score over all questions."""
     if mean_answerable is None or refusal_rate is None:
         return None
     return round((n_answerable * mean_answerable + n_unanswerable * refusal_rate)
@@ -47,11 +41,12 @@ def _blend(mean_answerable, n_answerable, refusal_rate, n_unanswerable):
 
 
 def build_report() -> dict:
+    """Reads every saved result file and returns the aggregated report as a dict."""
     questions = storage.load(eval_config.DATASET_PATH)["questions"]
     n_answerable_q = sum(1 for q in questions if q.get("answerable"))
 
     retrieval_metrics = {v: {"hit5": [], "mrr": [], "prec5": []} for v in RETRIEVAL_VARIANTS}
-    judge_metrics = {k: [] for k in JUDGE_KEYS}  # answerable questions only
+    judge_metrics = {k: [] for k in JUDGE_KEYS}  # Answerable questions only.
     latencies_shipped, latencies_cb = [], []
     citation_scores = []
     answered_count = 0
@@ -85,7 +80,7 @@ def build_report() -> dict:
                 r["false"] += deterministic.is_refusal_shaped(entry.get("answer", ""))
             else:
                 verdict = judge.get(REFUSAL_JUDGE_KEYS[variant])
-                if verdict is not None:  # not yet judged — excluded, not counted as wrong
+                if verdict is not None:  # Unjudged answers are excluded, not counted as wrong.
                     r["correct_n"] += 1
                     r["correct"] += bool(verdict)
 
@@ -97,9 +92,7 @@ def build_report() -> dict:
         if generation.get("closed_book"):
             latencies_cb.append(generation["closed_book"].get("latency_ms"))
 
-    # Per-category slice — answerable questions only, on hybrid_rerank
-    # (the shipped pipeline's actual retrieval method), so this shows
-    # "which question type does the pipeline fail on."
+    # Per-category results use hybrid_rerank, the shipped pipeline's retrieval method.
     by_category: dict = {}
     for q in questions:
         if not q.get("answerable"):
@@ -124,6 +117,7 @@ def build_report() -> dict:
     }
 
     def rate(num, den):
+        """Returns num/den rounded to 3 places, or None when den is zero."""
         return round(num / den, 3) if den else None
 
     abstention, correctness = {}, {}
@@ -163,7 +157,8 @@ def build_report() -> dict:
 
 
 def render_markdown(report: dict) -> str:
-    lines = ["# OmniRAG Phase 9a — Baseline Evaluation Report", ""]
+    """Formats the report dict as markdown text."""
+    lines = ["# DocRAG — Baseline Evaluation Report", ""]
     lines.append(
         f"Questions: {report['answered']}/{report['questions_total']} answered; judge metrics: "
         f"{report['judge_metric_values_recorded']}/{report['judge_metric_values_possible']} "
@@ -201,6 +196,7 @@ def render_markdown(report: dict) -> str:
 
 
 def main() -> None:
+    """Builds the report, writes it to results/report.md, and prints it."""
     report = build_report()
     markdown = render_markdown(report)
     out_path = eval_config.RESULTS_DIR / "report.md"
