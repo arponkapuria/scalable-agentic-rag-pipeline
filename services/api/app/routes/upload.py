@@ -3,7 +3,8 @@ Upload endpoint: issues a presigned S3/MinIO URL so the frontend can upload a fi
 """
 import asyncio
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from services.api.app.session.rate_limit import limit_by_ip, limit_by_session
 from services.api.app.config import settings
 from services.api.app.session.dependency import get_corpus_id
 from services.api.app.memory.postgres import document_store
@@ -20,6 +21,8 @@ s3_client = get_s3_client()
 class PresignedURLRequest(BaseModel):
     filename: str
     content_type: str  # e.g., "application/pdf"
+    # Client-declared, so only a fast-fail; the authoritative check reads the stored object's size at ingestion.
+    file_size: int = Field(gt=0)
 
 
 class PresignedURLResponse(BaseModel):
@@ -31,7 +34,14 @@ class PresignedURLResponse(BaseModel):
     corpus_id: str
 
 
-@router.post("/generate-presigned-url", response_model=PresignedURLResponse)
+@router.post(
+    "/generate-presigned-url",
+    response_model=PresignedURLResponse,
+    dependencies=[
+        Depends(limit_by_ip("upload", settings.RATE_LIMIT_UPLOAD_PER_HOUR, 3600)),
+        Depends(limit_by_session("upload", settings.RATE_LIMIT_UPLOAD_PER_HOUR, 3600)),
+    ],
+)
 async def generate_upload_url(
     req: PresignedURLRequest,
     corpus_id: str = Depends(get_corpus_id)
@@ -46,8 +56,11 @@ async def generate_upload_url(
         PresignedURLResponse with the upload URL and tracking ids.
 
     Raises:
-        HTTPException: 500 if URL generation fails.
+        HTTPException: 413 if the declared size exceeds the cap; 500 if URL generation fails.
     """
+    if req.file_size > settings.FILE_UPLOAD_MAX_SIZE_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File exceeds the {settings.FILE_UPLOAD_MAX_SIZE_MB} MB limit.")
+    
     file_id = str(uuid.uuid4())
     extension = req.filename.split('.')[-1] if '.' in req.filename else "bin"
     s3_key = f"uploads/{corpus_id}/{file_id}.{extension}"

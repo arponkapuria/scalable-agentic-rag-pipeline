@@ -46,8 +46,15 @@ def _corpus_id_from_key(file_key: str) -> str:
     return parts[1]
 
 
+class FileTooLargeError(ValueError):
+    """Raised when an uploaded object exceeds FILE_UPLOAD_MAX_SIZE_MB."""
+
+
 async def _fetch_object(bucket: str, file_key: str) -> bytes:
-    """Fetches an object from S3/MinIO. boto3 is sync, offloaded to a thread.
+    """Fetches an object from S3/MinIO, rejecting (and deleting) it if over the size cap.
+
+    The presign request's file_size is client-declared, so this stored-object check is the
+    one that actually enforces the cap. boto3 is sync, offloaded to a thread.
 
     Args:
         bucket: The S3 bucket name.
@@ -55,9 +62,18 @@ async def _fetch_object(bucket: str, file_key: str) -> bytes:
 
     Returns:
         The object's raw bytes.
+
+    Raises:
+        FileTooLargeError: If the stored object exceeds the size cap.
     """
+    max_bytes = settings.FILE_UPLOAD_MAX_SIZE_MB * 1024 * 1024
+
     def _get():
         client = get_s3_client()
+        size = client.head_object(Bucket=bucket, Key=file_key)["ContentLength"]
+        if size > max_bytes:
+            client.delete_object(Bucket=bucket, Key=file_key)
+            raise FileTooLargeError(f"File exceeds the {settings.FILE_UPLOAD_MAX_SIZE_MB} MB limit.")
         obj = client.get_object(Bucket=bucket, Key=file_key)
         return obj["Body"].read()
 

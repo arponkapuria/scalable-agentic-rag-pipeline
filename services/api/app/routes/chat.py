@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from services.api.app.config import settings
+from services.api.app.session.rate_limit import limit_by_ip, limit_by_session
 from services.api.app.session.dependency import get_corpus_id
 from services.api.app.cache.redis_cache import RedisCache, redis_cache as global_cache
 from services.api.app.memory.postgres import PostgresMemory, postgres_memory as global_memory
@@ -103,7 +105,13 @@ def _cache_hit_payload(corpus_id: str, entry: dict, cache_hit: str, message_id: 
     return response.model_dump_json() + "\n"
 
 
-@router.post("/stream")
+@router.post(
+    "/stream",
+    dependencies=[
+        Depends(limit_by_ip("chat", settings.RATE_LIMIT_CHAT_PER_MINUTE, 60)),
+        Depends(limit_by_session("chat", settings.RATE_LIMIT_CHAT_PER_MINUTE, 60)),
+    ],
+)
 async def chat_stream(
     req: ChatRequest,
     corpus_id: str = Depends(get_corpus_id),

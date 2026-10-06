@@ -270,8 +270,7 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
 
 <header>
-  <h1>DocRAG</h1>
-  <p> Agentic Hybrid Retrieval Over Your Documents.</p>
+  <h1>DocRAG - Agentic Hybrid Retrieval Over Your Documents.</h1>
 </header>
 
 <main>
@@ -285,7 +284,7 @@
   </section>
 
   <aside id="doc-col">
-    <div id="doc-desc">Upload PDFs, DOCX, HTML, or Markdown to add them to your corpus.</div>
+    <div id="doc-desc">Upload only PDF/DOCX/HTML/Markdown...</div>
     <div id="upload-zone">
       <input type="file" id="file-input">
       <button id="upload-btn">Upload</button>
@@ -318,6 +317,12 @@ function renderMarkdown(text) {
   const stripped = text.replace(SOURCE_TAG_RE, '');
   const html = marked.parse(stripped, { breaks: true });
   return DOMPurify.sanitize(html);
+}
+
+// Turns a failed response into a user-facing message; 429s show how long to wait.
+async function errorMessage(resp) {
+  if (resp.status === 429) return `Rate limit hit — retry in ${resp.headers.get('Retry-After')}s.`;
+  try { return (await resp.json()).detail; } catch { return `Request failed (${resp.status}).`; }
 }
 
 async function initSession() {
@@ -463,6 +468,12 @@ document.getElementById('chat-form').addEventListener('submit', async (e) => {
     body: JSON.stringify({ message }),
   });
 
+  if (!resp.ok) {
+    generatingRow.remove();
+    addMessage('assistant', 'Error: ' + await errorMessage(resp));
+    return;
+  }
+
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -545,8 +556,12 @@ document.getElementById('upload-btn').addEventListener('click', async () => {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename: file.name, content_type: contentType }),
+    body: JSON.stringify({ filename: file.name, content_type: contentType, file_size: file.size }),
   });
+  if (!presignResp.ok) {
+    uploadStatusEl.textContent = await errorMessage(presignResp);
+    return;
+  }
   const { upload_url, file_id, corpus_id } = await presignResp.json();
 
   uploadStatusEl.textContent = 'Uploading...';

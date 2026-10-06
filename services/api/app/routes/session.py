@@ -1,12 +1,13 @@
 """
 Session endpoint: issues the httpOnly corpus_id cookie that every other data-touching route depends on.
 """
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, Depends
 from pydantic import BaseModel
 
 from services.api.app.config import settings
 from services.api.app.session.dependency import SESSION_COOKIE_NAME
 from services.api.app.session.store import session_store
+from services.api.app.session.rate_limit import limit_by_ip
 
 router = APIRouter()
 
@@ -33,7 +34,12 @@ def _set_cookie(response: Response, corpus_id: str) -> None:
     )
 
 
-@router.post("/init", response_model=SessionResponse)
+# IP-only: no session exists yet, and this is what stops session-minting from bypassing per-session limits.
+@router.post(
+    "/init",
+    response_model=SessionResponse,
+    dependencies=[Depends(limit_by_ip("session_init", settings.RATE_LIMIT_SESSION_INIT_PER_HOUR, 3600))],
+)
 async def init_session(request: Request, response: Response):
     """Issues a corpus_id as an httpOnly cookie, or refreshes an existing valid one.
 

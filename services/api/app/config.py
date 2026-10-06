@@ -100,6 +100,15 @@ class Settings(BaseSettings):
     INGEST_DEBUG_DUMP: bool = True
     INGEST_DEBUG_DIR: str = "logs/ingest_debug"
 
+    # Inbound rate limits / upload cap
+    RATE_LIMIT_CHAT_PER_MINUTE: int = 10
+    RATE_LIMIT_UPLOAD_PER_HOUR: int = 5
+    RATE_LIMIT_SESSION_INIT_PER_HOUR: int = 30
+    FILE_UPLOAD_MAX_SIZE_MB: int = 20
+
+    # Trust X-Forwarded-For only when our own reverse proxy (OpenResty) sets it.
+    TRUSTED_PROXY: bool = False
+
     # Evaluation judges — deliberately different vendors from the generator and captioner.
     GOOGLE_API_KEY: Optional[str] = None
     GEMMA_JUDGE_MODEL: str = "gemma-4-31b-it"
